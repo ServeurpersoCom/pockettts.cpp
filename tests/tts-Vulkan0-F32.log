@@ -1,0 +1,47 @@
+[Input] Prompt: 124 chars: Hello world. I am Kyutai's Pocket TTS, running locally on GG...
+[Input] Pack: english_2026-09 Voice: alba Seed: 42
+[Python] Frames: 105
+[Python] Audio: 201600 samples 24000 Hz 8.40s -> python/tts/tts-python.wav
+[Quant] F32 -> ../models/pocket-tts-english_2026-09-F32.gguf
+[GGML] Cmd: ../build/pocket-tts --model ../models/pocket-tts-english_2026-09-F32.gguf --voices ../models/pocket-tts-english_2026-09-voices.gguf --voice alba --seed 42 --dump cpp/tts --format wav32 -o cpp/tts/tts-cpp.wav
+[GGML] ggml_cuda_init: found 1 CUDA devices (Total VRAM: 97249 MiB):
+[GGML]   Device 0: NVIDIA RTX PRO 6000 Blackwell Workstation Edition, compute capability 12.0, VMM: yes, VRAM: 97249 MiB
+[GGML] load_backend: loaded CUDA backend from /mnt/workspace/git/pockettts.cpp/build/libggml-cuda.so
+[GGML] ggml_vulkan: Found 1 Vulkan devices:
+[GGML] ggml_vulkan: 0 = NVIDIA RTX PRO 6000 Blackwell Workstation Edition (NVIDIA) | uma: 0 | fp16: 1 | bf16: 0 | fp4: 0 | warp size: 32 | shared memory: 49152 | int dot: 1 | matrix cores: NV_coopmat2
+[GGML] load_backend: loaded Vulkan backend from /mnt/workspace/git/pockettts.cpp/build/libggml-vulkan.so
+[GGML] load_backend: loaded CPU backend from /mnt/workspace/git/pockettts.cpp/build/libggml-cpu-zen4.so
+[Load] Backend: Vulkan0
+[GGUF] ../models/pocket-tts-english_2026-09-F32.gguf: 214 tensors, data at offset 89568
+[WeightCtx] Loaded 213 tensors, 407.3 MB into backend
+[Load] ../models/pocket-tts-english_2026-09-F32.gguf: flow 6 layers x 1024, head 6 x 512, 2 time conds, Mimi 24000 Hz / 12.5 Hz
+[Load] Ready in 243 ms
+[GGUF] ../models/pocket-tts-english_2026-09-voices.gguf: 54 tensors, data at offset 3200
+[Voice] alba: 126 prompt frames
+[Debug] voice-k0: [126, 1024] first4: -0.004105 0.001376 0.008414 0.002834
+[Debug] voice-v-last: [126, 1024] first4: 0.088246 -0.025443 0.077042 0.042382
+[FlowLM] KV cache: 512 rows, 24.0 MB
+[Debug] prompt-ids: [43] first4: 2994.000000 578.000000 263.000000 268.000000
+[Debug] text-embed: [43, 1024] first4: -0.003586 -0.004395 -0.002731 0.009583
+[Debug] step0-hidden: [1024] first4: -0.120137 -0.692765 0.370639 -0.281972
+[Debug] step0-latent: [32] first4: -1.770031 -1.002189 -0.104708 -0.053932
+[TTS] chunk 1/2: 43 tokens, prefill 706.1 ms, 90 frames, EOS at 87
+[TTS] chunk 2/2: 8 tokens, prefill 425.2 ms, 15 frames, EOS at 12
+[TTS] 8.40 s of audio in 3959 ms (2.1x real time), step 3.76 ms/frame, decode 23.15 ms/frame, seed 42
+[Debug] eos: [107] first4: -9.817841 -11.029467 -12.194110 -12.116065
+[Debug] latents: [105, 32] first4: -1.770031 -1.002189 -0.104708 -0.053932
+[Debug] output-audio: [201600] first4: 0.003379 0.010583 0.019951 0.029205
+[WAV] Wrote cpp/tts/tts-cpp.wav: 201600 samples, 24000 Hz, mono F32
+[CLI] Wrote 201600 samples (8.40 s) -> cpp/tts/tts-cpp.wav
+[GGML] Frames: 105
+[GGML] Audio: 201600 samples 24000 Hz 8.40s -> cpp/tts/tts-cpp.wav
+[Cossim] PromptIDs exact: 100.00% (43 values)
+[Cossim] TextEmbed cos: 1.000000 max: 0.0000e+00 mean: 0.0000e+00
+[Cossim] VoiceK0 cos: 1.000000 max: 0.0000e+00 mean: 0.0000e+00
+[Cossim] VoiceVLast cos: 1.000000 max: 0.0000e+00 mean: 0.0000e+00
+[Cossim] Step0Hidden cos: 1.000000 max: 1.8320e-03 mean: 3.2697e-04
+[Cossim] Step0Latent cos: 1.000000 max: 1.7856e-03 mean: 7.0083e-04
+[Cossim] Eos cos: 0.993485 max: 7.4858e+00 mean: 3.8935e-01
+[Cossim] Latents cos: 0.991988 max: 2.7390e+00 mean: 4.7223e-02
+[Cossim] Audio cos: 0.840058
+[Cossim] WAV stft_cos: 0.985068 samples: 201600
