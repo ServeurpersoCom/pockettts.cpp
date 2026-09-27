@@ -4,7 +4,7 @@
 
 set -eu
 
-REPO="Serveurperso/pockettts.cpp-GGUF"
+REPO="Serveurperso/pocket-tts-GGUF"
 DIR="models"
 mkdir -p "$DIR"
 

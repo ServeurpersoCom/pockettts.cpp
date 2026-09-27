@@ -44,7 +44,7 @@ NVCC_CCBIN=g++-13 ./buildcuda.sh # rolling release distros (Arch w/ GCC 16, etc.
 
 Pre-converted GGUFs are available on Hugging Face:
 
-  https://huggingface.co/Serveurperso/pockettts.cpp-GGUF
+  https://huggingface.co/Serveurperso/pocket-tts-GGUF
 
 ```
 ./models.sh           # english_2026-09 and french_24l, Q8_0, with their voices -> models/
