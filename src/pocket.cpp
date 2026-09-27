@@ -8,8 +8,9 @@
 // the length budget of the chunk. Latents stream into the Mimi decoder,
 // whose state restarts at every chunk, in blocks growing 1, 2, 4 ... 16
 // frames. The audio of the first frame of every chunk is dropped (its
-// latent is still decoded): the first latent after BOS carries an onset
-// transient ahead of the speech, a click once the chunk follows audio.
+// latent is still decoded): the first latent after BOS reproduces the Mimi
+// encoder cold start frame that opens the training sequences and decodes
+// to a short click ahead of the speech.
 //
 // The noise of every step comes from a torch compatible generator seeded
 // once per synthesis; each text prefill draws one discarded noise vector
