@@ -1,7 +1,7 @@
 [Input] Prompt: 124 chars: Hello world. I am Kyutai's Pocket TTS, running locally on GG...
 [Input] Pack: english_2026-09 Voice: ../examples/freeman.wav Seed: 42
 [Python] Frames: 125
-[Python] Audio: 240000 samples 24000 Hz 10.00s -> python/clone/clone-python.wav
+[Python] Audio: 236160 samples 24000 Hz 9.84s -> python/clone/clone-python.wav
 [Quant] F32 -> ../models/pocket-tts-english_2026-09-F32.gguf
 [GGML] Cmd: ../build/pocket-tts --model ../models/pocket-tts-english_2026-09-F32.gguf --voice ../examples/freeman.wav --seed 42 --dump cpp/clone --format wav32 -o cpp/clone/clone-cpp.wav
 [GGML] ggml_cuda_init: found 1 CUDA devices (Total VRAM: 97249 MiB):
@@ -16,10 +16,10 @@
 [WeightCtx] Loaded 213 tensors, 407.3 MB into backend
 [Load] ../models/pocket-tts-english_2026-09-F32.gguf: flow 6 layers x 1024, head 6 x 512, 2 time conds, Mimi 24000 Hz / 12.5 Hz
 [Load] Flash attention: on, FP16 clamp: off
-[Load] Ready in 240 ms
+[Load] Ready in 229 ms
 [WAV] Read buffer: 380672 samples, 22050 Hz, 1 ch, 16 bit
 [FlowLM] KV cache: 256 rows, 12.0 MB
-[Voice] 17.26 s of audio -> 217 prompt frames (encode 73 ms, prefill 4 ms)
+[Voice] 17.26 s of audio -> 217 prompt frames (encode 75 ms, prefill 4 ms)
 [Debug] voice-k0: [217, 1024] first4: -0.004105 0.001376 0.008414 0.002834
 [Debug] voice-v-last: [217, 1024] first4: 0.088248 -0.025440 0.077041 0.042380
 [FlowLM] KV cache: 512 rows, 24.0 MB
@@ -34,14 +34,14 @@
 [Dedup] Previous line repeated 2 times total
 [GGML] ggml_backend_cuda_graph_compute: CUDA graph warmup complete
 [TTS] chunk 2/2: 8 tokens, prefill 2.0 ms, 15 frames, EOS at 12
-[TTS] 9.36 s of audio in 116 ms (80.3x real time), step 0.61 ms/frame, decode 0.33 ms/frame, seed 42
+[TTS] 9.36 s of audio in 117 ms (80.1x real time), step 0.61 ms/frame, decode 0.33 ms/frame, seed 42
 [Debug] eos: [119] first4: -9.954578 -9.551779 -11.969675 -11.167261
 [Debug] latents: [117, 32] first4: -0.007206 -0.031314 -0.025831 0.040114
-[Debug] output-audio: [224640] first4: 0.001184 0.003970 0.007407 0.008697
-[WAV] Wrote cpp/clone/clone-cpp.wav: 224640 samples, 24000 Hz, mono F32
-[CLI] Wrote 224640 samples (9.36 s) -> cpp/clone/clone-cpp.wav
+[Debug] output-audio: [220800] first4: 0.000157 -0.000069 -0.000363 -0.000294
+[WAV] Wrote cpp/clone/clone-cpp.wav: 220800 samples, 24000 Hz, mono F32
+[CLI] Wrote 220800 samples (9.20 s) -> cpp/clone/clone-cpp.wav
 [GGML] Frames: 117
-[GGML] Audio: 224640 samples 24000 Hz 9.36s -> cpp/clone/clone-cpp.wav
+[GGML] Audio: 220800 samples 24000 Hz 9.20s -> cpp/clone/clone-cpp.wav
 [Cossim] PromptIDs exact: 100.00% (43 values)
 [Cossim] TextEmbed cos: 1.000000 max: 0.0000e+00 mean: 0.0000e+00
 [Cossim] VoiceK0 cos: 0.999998 max: 1.3821e-01 mean: 1.4286e-03
@@ -50,5 +50,5 @@
 [Cossim] Step0Latent cos: 0.999964 max: 3.8981e-02 mean: 6.3859e-03
 [Cossim] Eos cos: 0.868743 max: 2.4605e+01 mean: 2.4534e+00
 [Cossim] Latents cos: 0.271204 max: 6.0230e+00 mean: 7.8954e-01
-[Cossim] Audio cos: 0.049410
-[Cossim] WAV stft_cos: 0.335238 samples: 224640
+[Cossim] Audio cos: 0.049984
+[Cossim] WAV stft_cos: 0.338454 samples: 220800

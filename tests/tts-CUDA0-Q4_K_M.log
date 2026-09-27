@@ -1,7 +1,7 @@
 [Input] Prompt: 124 chars: Hello world. I am Kyutai's Pocket TTS, running locally on GG...
 [Input] Pack: english_2026-09 Voice: alba Seed: 42
 [Python] Frames: 105
-[Python] Audio: 201600 samples 24000 Hz 8.40s -> python/tts/tts-python.wav
+[Python] Audio: 197760 samples 24000 Hz 8.24s -> python/tts/tts-python.wav
 [Quant] Q4_K_M -> ../models/pocket-tts-english_2026-09-Q4_K_M.gguf
 [GGML] Cmd: ../build/pocket-tts --model ../models/pocket-tts-english_2026-09-Q4_K_M.gguf --voices ../models/pocket-tts-english_2026-09-voices.gguf --voice alba --seed 42 --dump cpp/tts --format wav32 -o cpp/tts/tts-cpp.wav
 [GGML] ggml_cuda_init: found 1 CUDA devices (Total VRAM: 97249 MiB):
@@ -16,7 +16,7 @@
 [WeightCtx] Loaded 213 tensors, 76.7 MB into backend
 [Load] ../models/pocket-tts-english_2026-09-Q4_K_M.gguf: flow 6 layers x 1024, head 6 x 512, 2 time conds, Mimi 24000 Hz / 12.5 Hz
 [Load] Flash attention: on, FP16 clamp: off
-[Load] Ready in 201 ms
+[Load] Ready in 176 ms
 [GGUF] ../models/pocket-tts-english_2026-09-voices.gguf: 54 tensors, data at offset 3200
 [Voice] alba: 126 prompt frames
 [Debug] voice-k0: [126, 1024] first4: -0.004105 0.001376 0.008414 0.002834
@@ -31,18 +31,18 @@
 [GGML] ggml_backend_cuda_graph_compute: CUDA graph warmup reset
 [GGML] ggml_backend_cuda_graph_compute: CUDA graph warmup complete
 [GGML] ggml_backend_cuda_graph_compute: CUDA graph warmup reset
-[TTS] chunk 1/2: 43 tokens, prefill 14.2 ms, 92 frames, EOS at 89
+[TTS] chunk 1/2: 43 tokens, prefill 14.4 ms, 92 frames, EOS at 89
 [Dedup] Previous line repeated 2 times total
 [GGML] ggml_backend_cuda_graph_compute: CUDA graph warmup complete
 [TTS] chunk 2/2: 8 tokens, prefill 1.9 ms, 17 frames, EOS at 14
-[TTS] 8.72 s of audio in 145 ms (60.0x real time), step 0.46 ms/frame, decode 0.71 ms/frame, seed 42
+[TTS] 8.72 s of audio in 147 ms (59.5x real time), step 0.46 ms/frame, decode 0.72 ms/frame, seed 42
 [Debug] eos: [111] first4: -9.356079 -11.218856 -11.618690 -12.639155
 [Debug] latents: [109, 32] first4: -1.668460 -0.534892 -0.174253 0.137017
-[Debug] output-audio: [209280] first4: 0.003417 0.010657 0.020301 0.029761
-[WAV] Wrote cpp/tts/tts-cpp.wav: 209280 samples, 24000 Hz, mono F32
-[CLI] Wrote 209280 samples (8.72 s) -> cpp/tts/tts-cpp.wav
+[Debug] output-audio: [205440] first4: -0.105187 -0.072351 -0.057519 -0.049096
+[WAV] Wrote cpp/tts/tts-cpp.wav: 205440 samples, 24000 Hz, mono F32
+[CLI] Wrote 205440 samples (8.56 s) -> cpp/tts/tts-cpp.wav
 [GGML] Frames: 109
-[GGML] Audio: 209280 samples 24000 Hz 8.72s -> cpp/tts/tts-cpp.wav
+[GGML] Audio: 205440 samples 24000 Hz 8.56s -> cpp/tts/tts-cpp.wav
 [Cossim] PromptIDs exact: 100.00% (43 values)
 [Cossim] TextEmbed cos: 0.999836 max: 1.2817e-03 mean: 2.3336e-04
 [Cossim] VoiceK0 cos: 1.000000 max: 0.0000e+00 mean: 0.0000e+00
@@ -51,5 +51,5 @@
 [Cossim] Step0Latent cos: 0.980363 max: 4.9461e-01 mean: 1.9321e-01
 [Cossim] Eos cos: 0.934830 max: 2.0585e+01 mean: 1.4734e+00
 [Cossim] Latents cos: 0.685945 max: 8.0515e+00 mean: 5.1967e-01
-[Cossim] Audio cos: 0.258756
-[Cossim] WAV stft_cos: 0.549241 samples: 201600
+[Cossim] Audio cos: 0.198917
+[Cossim] WAV stft_cos: 0.519359 samples: 197760
