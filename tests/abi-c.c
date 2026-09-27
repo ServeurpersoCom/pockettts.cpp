@@ -37,7 +37,7 @@ int main(void) {
     }
 
     pt_init_default_params(&ip);
-    if (ip.abi_version != PT_ABI_VERSION || ip.model_path) {
+    if (ip.abi_version != PT_ABI_VERSION || ip.model_path || !ip.use_fa || ip.clamp_fp16) {
         fprintf(stderr, "FAIL: pt_init_default_params\n");
         fails++;
     }

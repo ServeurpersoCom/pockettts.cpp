@@ -115,6 +115,7 @@ struct pt_voice {
 struct pt_context {
     ggml_backend_t     backend = nullptr;
     PTHparams          hp;
+    PTOpts             opts;
     PTWeights          w;
     PTTokenizer        tok;
     FlowKV             kv;
@@ -177,7 +178,7 @@ static bool pt_prefill(pt_context *                 c,
     }
     ggml_tensor * x_in = x;
     ggml_set_output(x_in);
-    x = flow_backbone(ctx, gf, c->w, c->hp, c->kv, x, in, n_kv);
+    x = flow_backbone(ctx, gf, c->w, c->hp, c->kv, x, in, n_kv, c->opts);
     ggml_build_forward_expand(gf, x);
     if (!pt_alloc(c->ga_prefill, gf, "prefill")) {
         return false;
@@ -212,7 +213,7 @@ static bool pt_step(pt_context *  c,
     if (n_kv > c->kv.capacity) {
         n_kv = c->kv.capacity;
     }
-    FlowStep st = flow_build_step(ctx, gf, c->w, c->hp, c->kv, n_kv, n_steps);
+    FlowStep st = flow_build_step(ctx, gf, c->w, c->hp, c->kv, n_kv, n_steps, c->opts);
     if (!pt_alloc(c->ga_step, gf, "step")) {
         return false;
     }
@@ -233,7 +234,7 @@ static bool pt_step(pt_context *  c,
 static bool pt_decode(pt_context * c, const float * latents, int n, std::vector<float> & audio) {
     ggml_context * ctx;
     ggml_cgraph *  gf = pt_graph(c->ar_dec, &ctx);
-    MimiDec        d  = mimi_build_decode(ctx, gf, c->w, c->hp, c->ms, n);
+    MimiDec        d  = mimi_build_decode(ctx, gf, c->w, c->hp, c->ms, n, c->opts);
     if (!pt_alloc(c->ga_dec, gf, "decode")) {
         return false;
     }
@@ -280,6 +281,7 @@ void pt_audio_free(struct pt_audio * a) {
 void pt_init_default_params(struct pt_init_params * p) {
     *p             = {};
     p->abi_version = PT_ABI_VERSION;
+    p->use_fa      = true;
 }
 
 void pt_free(struct pt_context * c) {
@@ -321,6 +323,9 @@ struct pt_context * pt_init(const struct pt_init_params * params) {
         if (!c->backend) {
             pt_throw("pt_init: no backend");
         }
+        ggml_backend_dev_t dev = ggml_backend_get_device(c->backend);
+        c->opts.fa             = params->use_fa && dev && ggml_backend_dev_type(dev) != GGML_BACKEND_DEVICE_TYPE_CPU;
+        c->opts.clamp_fp16     = params->clamp_fp16;
         if (!gf_load(&gf, params->model_path)) {
             pt_throw("pt_init: cannot load %s", params->model_path);
         }
@@ -347,6 +352,8 @@ struct pt_context * pt_init(const struct pt_init_params * params) {
         pt_log(PT_LOG_INFO, "[Load] %s: flow %d layers x %d, head %d x %d, %d time conds, Mimi %d Hz / %.1f Hz",
                params->model_path, hp.n_layers, hp.dim, hp.head_depth, hp.head_dim, hp.n_time_conds, hp.sample_rate,
                hp.frame_rate);
+        pt_log(PT_LOG_INFO, "[Load] Flash attention: %s, FP16 clamp: %s", c->opts.fa ? "on" : "off",
+               c->opts.clamp_fp16 ? "on" : "off");
         pt_log(PT_LOG_INFO, "[Load] Ready in %.0f ms", t.ms());
         return c;
     } catch (const std::exception & e) {
@@ -389,7 +396,7 @@ struct pt_voice * pt_voice_from_audio(struct pt_context * c, const float * sampl
 
     ggml_context * ctx;
     ggml_cgraph *  gf = pt_graph(c->ar_enc, &ctx);
-    MimiEnc        e  = mimi_build_encode(ctx, gf, c->w, hp, n_pad);
+    MimiEnc        e  = mimi_build_encode(ctx, gf, c->w, hp, n_pad, c->opts);
     if (!pt_alloc(c->ga_enc, gf, "voice encode")) {
         return nullptr;
     }

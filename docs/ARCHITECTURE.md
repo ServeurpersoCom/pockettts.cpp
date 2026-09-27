@@ -70,6 +70,11 @@ KV rows of the reference voice state file.
 
 - One backend per context (best device or `GGML_BACKEND`), no
   scheduler: every graph runs whole on it or fails.
+- Attention: `ggml_flash_attn_ext` with an F32 accumulator on GPU
+  backends, the explicit F32 chain on CPU and with `--no-fa`; masks are
+  F16. `--clamp-fp16` clamps the qkv projection and the residual stream
+  after each add to the FP16 range; the clamp runs on contiguous tensors
+  since the CUDA clamp kernel ignores view strides.
 - Weights: matmul weights keep their GGUF type, vectors load as F32,
   conv kernels as F16 (the ggml im2col path), transposed conv kernels
   as F32 permuted for GEMM + col2im.

@@ -25,6 +25,13 @@
 #include <string>
 #include <vector>
 
+// Graph options: fused flash attention (GPU backends) and FP16 range clamps
+// on V and on the residual stream (CUDA before Ampere accumulates in FP16).
+struct PTOpts {
+    bool fa;
+    bool clamp_fp16;
+};
+
 struct PTHparams {
     // flow LM
     int   dim;

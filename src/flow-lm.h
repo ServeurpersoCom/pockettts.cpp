@@ -74,20 +74,19 @@ static bool flow_kv_ensure(FlowKV * kv, const PTHparams & hp, ggml_backend_t bac
 struct FlowInputs {
     ggml_tensor * pos;   // I32 [T]
     ggml_tensor * idx;   // I64 [T]
-    ggml_tensor * mask;  // F32 [n_kv, T]
+    ggml_tensor * mask;  // F16 [n_kv, T]
 };
 
 static FlowInputs flow_inputs(ggml_context * ctx, int T, int n_kv) {
     FlowInputs in;
     in.pos  = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, T);
     in.idx  = ggml_new_tensor_1d(ctx, GGML_TYPE_I64, T);
-    in.mask = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, n_kv, T);
+    in.mask = pt_mask_new(ctx, n_kv, T);
     ggml_set_name(in.pos, "pos");
     ggml_set_name(in.idx, "idx");
     ggml_set_name(in.mask, "mask");
     ggml_set_input(in.pos);
     ggml_set_input(in.idx);
-    ggml_set_input(in.mask);
     return in;
 }
 
@@ -105,7 +104,7 @@ static void flow_fill_inputs(const FlowInputs & in, int n_past, int T, int n_kv)
     }
     ggml_backend_tensor_set(in.pos, pos.data(), 0, pos.size() * sizeof(int32_t));
     ggml_backend_tensor_set(in.idx, idx.data(), 0, idx.size() * sizeof(int64_t));
-    ggml_backend_tensor_set(in.mask, mask.data(), 0, mask.size() * sizeof(float));
+    pt_mask_upload(in.mask, mask.data());
 }
 
 static ggml_tensor * flow_backbone(ggml_context *     ctx,
@@ -115,10 +114,11 @@ static ggml_tensor * flow_backbone(ggml_context *     ctx,
                                    const FlowKV &     kv,
                                    ggml_tensor *      x,
                                    const FlowInputs & in,
-                                   int                n_kv) {
+                                   int                n_kv,
+                                   const PTOpts &     o) {
     for (int l = 0; l < hp.n_layers; l++) {
         x = pt_tfm_layer_cached(ctx, gf, w.layers[l], x, hp.n_heads, hp.max_period, in.pos, kv.k[l], kv.v[l], in.idx,
-                                n_kv, in.mask);
+                                n_kv, in.mask, o);
     }
     return x;
 }
@@ -198,7 +198,8 @@ static FlowStep flow_build_step(ggml_context *    ctx,
                                 const PTHparams & hp,
                                 const FlowKV &    kv,
                                 int               n_kv,
-                                int               n_steps) {
+                                int               n_steps,
+                                const PTOpts &    o) {
     FlowStep st;
     st.latent = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, hp.ldim, 1);
     st.noise  = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, hp.ldim, 1);
@@ -209,7 +210,7 @@ static FlowStep flow_build_step(ggml_context *    ctx,
     st.in = flow_inputs(ctx, 1, n_kv);
 
     ggml_tensor * x = ggml_mul_mat(ctx, w.input_linear, st.latent);
-    x               = flow_backbone(ctx, gf, w, hp, kv, x, st.in, n_kv);
+    x               = flow_backbone(ctx, gf, w, hp, kv, x, st.in, n_kv, o);
     ggml_tensor * c = pt_layer_norm(ctx, x, w.out_norm_w, w.out_norm_b, 1e-5f);
 
     st.hidden = c;

@@ -81,11 +81,17 @@ PT_API void pt_audio_free(struct pt_audio * a);
 struct pt_context;
 struct pt_voice;
 
+// use_fa enables fused flash attention on GPU backends (CPU always runs
+// the F32 manual chain); clamp_fp16 clamps V and the residual stream to the
+// FP16 range, for CUDA targets before Ampere that accumulate in FP16.
 struct pt_init_params {
     int          abi_version;
     const char * model_path;  // pocket-tts-<pack>-<type>.gguf
+    bool         use_fa;
+    bool         clamp_fp16;
 };
 
+// Defaults: model_path NULL, use_fa true, clamp_fp16 false.
 PT_API void                pt_init_default_params(struct pt_init_params * p);
 PT_API struct pt_context * pt_init(const struct pt_init_params * params);
 PT_API void                pt_free(struct pt_context * ctx);

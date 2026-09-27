@@ -91,7 +91,7 @@ static void mimi_state_free(MimiState * s) {
 struct MimiDec {
     ggml_tensor * latent;  // F32 [ldim, n]
     ggml_tensor * pos;     // I32 [n * upsample_stride]
-    ggml_tensor * mask;    // F32 [context + n * upsample_stride, n * upsample_stride]
+    ggml_tensor * mask;    // F16 [context + n * upsample_stride, n * upsample_stride]
     ggml_tensor * audio;   // F32 [n * frame_size]
 };
 
@@ -100,15 +100,15 @@ static MimiDec mimi_build_decode(ggml_context *    ctx,
                                  const PTWeights & w,
                                  const PTHparams & hp,
                                  const MimiState & s,
-                                 int               n) {
+                                 int               n,
+                                 const PTOpts &    o) {
     const int T = n * hp.upsample_stride;
     MimiDec   d;
     d.latent = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, hp.ldim, n);
     d.pos    = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, T);
-    d.mask   = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, hp.tfm_context + T, T);
+    d.mask   = pt_mask_new(ctx, hp.tfm_context + T, T);
     ggml_set_input(d.latent);
     ggml_set_input(d.pos);
-    ggml_set_input(d.mask);
 
     ggml_tensor * x  = ggml_add(ctx, ggml_mul(ctx, d.latent, w.emb_std), w.emb_mean);
     x                = ggml_mul_mat(ctx, w.quant_proj, x);                                               // [outer, n]
@@ -120,7 +120,7 @@ static MimiDec mimi_build_decode(ggml_context *    ctx,
         ggml_tensor * tk;
         ggml_tensor * tv;
         x = pt_tfm_layer_window(ctx, w.dec_layers[l], x, hp.tfm_n_heads, hp.tfm_max_period, d.pos, s.kc[l], s.vc[l],
-                                d.mask, hp.tfm_context, &tk, &tv);
+                                d.mask, hp.tfm_context, &tk, &tv, o);
         ggml_build_forward_expand(gf, x);
         ggml_build_forward_expand(gf, ggml_cpy(ctx, tk, s.kc[l]));
         ggml_build_forward_expand(gf, ggml_cpy(ctx, tv, s.vc[l]));
@@ -160,7 +160,7 @@ static void mimi_fill_decode(const MimiDec &   d,
     ggml_backend_tensor_set(d.pos, pos.data(), 0, pos.size() * sizeof(int32_t));
     std::vector<float> mask((size_t) (hp.tfm_context + T) * T);
     pt_window_mask(mask.data(), hp.tfm_context, T, s.pos, hp.tfm_context);
-    ggml_backend_tensor_set(d.mask, mask.data(), 0, mask.size() * sizeof(float));
+    pt_mask_upload(d.mask, mask.data());
 }
 
 // Voice encoder: n_samples (a multiple of frame_size) -> [dim, n_samples / frame_size].
@@ -175,7 +175,8 @@ static MimiEnc mimi_build_encode(ggml_context *    ctx,
                                  ggml_cgraph *     gf,
                                  const PTWeights & w,
                                  const PTHparams & hp,
-                                 int               n_samples) {
+                                 int               n_samples,
+                                 const PTOpts &    o) {
     MimiEnc e;
     e.audio = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, n_samples, 1, 1);
     ggml_set_input(e.audio);
@@ -203,8 +204,7 @@ static MimiEnc mimi_build_encode(ggml_context *    ctx,
     for (int b0 = 0; b0 < Te; b0 += W) {
         const int     T = Te - b0 < W ? Te - b0 : W;
         const int     P = b0 == 0 ? 0 : W;
-        ggml_tensor * m = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, P + T, T);
-        ggml_set_input(m);
+        ggml_tensor * m = pt_mask_new(ctx, P + T, T);
         e.masks.push_back(m);
         ggml_tensor * xb = ggml_view_2d(ctx, x, hp.tfm_dim, T, x->nb[1], (size_t) b0 * x->nb[1]);
         ggml_tensor * pb = ggml_view_1d(ctx, e.pos, T, (size_t) b0 * sizeof(int32_t));
@@ -212,7 +212,7 @@ static MimiEnc mimi_build_encode(ggml_context *    ctx,
             ggml_tensor * tk;
             ggml_tensor * tv;
             xb = pt_tfm_layer_window(ctx, w.enc_layers[l], xb, hp.tfm_n_heads, hp.tfm_max_period, pb, pk[l], pv[l], m,
-                                     W, &tk, &tv);
+                                     W, &tk, &tv, o);
             pk[l] = tk;
             pv[l] = tv;
         }
@@ -244,6 +244,6 @@ static void mimi_fill_encode(const MimiEnc & e, const PTHparams & hp, const floa
         const int          T = (int) e.masks[b]->ne[1];
         std::vector<float> m((size_t) (P + T) * T);
         pt_window_mask(m.data(), P, T, (int) b * W, W);
-        ggml_backend_tensor_set(e.masks[b], m.data(), 0, m.size() * sizeof(float));
+        pt_mask_upload(e.masks[b], m.data());
     }
 }

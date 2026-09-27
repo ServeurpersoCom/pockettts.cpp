@@ -6,9 +6,12 @@
 //
 // Activations are channels-first [C, T]. in_proj packs q, k, v along the
 // output dim (3, H, hd); RoPE rotates interleaved pairs (GGML_ROPE_TYPE_NORMAL)
-// at absolute positions. Attention is the explicit F32 chain (mul_mat,
-// masked softmax, mul_mat) so every backend runs it the same way; masks are
-// host built F32 [n_kv, T] with 0 for allowed and -INF for masked keys.
+// at absolute positions. Attention is ggml_flash_attn_ext with an F32
+// accumulator, or the explicit F32 chain (mul_mat, masked softmax, mul_mat)
+// on CPU and with --no-fa. Masks are host built F16 [n_kv, T], 0 for
+// allowed and -INF for masked keys. With clamp_fp16, the qkv projection
+// and the residual stream after each add are clamped to the FP16 range
+// (the qkv output is contiguous, the V views taken from it are not).
 //
 // Two key sources:
 //   flow LM  linear KV cache [C, capacity] per layer, the new rows written
@@ -17,10 +20,12 @@
 //   Mimi     sliding window: keys = [previous tail, new rows], the tail of
 //            the concatenation (last `window` rows) feeds the next call
 
+#include "ggml-backend.h"
 #include "ggml.h"
 #include "model.h"
 
 #include <cmath>
+#include <vector>
 
 static ggml_tensor * pt_layer_norm(ggml_context * ctx, ggml_tensor * x, ggml_tensor * w, ggml_tensor * b, float eps) {
     x = ggml_norm(ctx, x, eps);
@@ -31,6 +36,22 @@ static ggml_tensor * pt_layer_norm(ggml_context * ctx, ggml_tensor * x, ggml_ten
         x = ggml_add(ctx, x, b);
     }
     return x;
+}
+
+static ggml_tensor * pt_clamp(ggml_context * ctx, ggml_tensor * x, const PTOpts & o) {
+    return o.clamp_fp16 ? ggml_clamp(ctx, x, -65504.0f, 65504.0f) : x;
+}
+
+static ggml_tensor * pt_mask_new(ggml_context * ctx, int64_t n_kv, int64_t T) {
+    ggml_tensor * m = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, n_kv, T);
+    ggml_set_input(m);
+    return m;
+}
+
+static void pt_mask_upload(ggml_tensor * m, const float * mask) {
+    std::vector<ggml_fp16_t> h((size_t) ggml_nelements(m));
+    ggml_fp32_to_fp16_row(mask, h.data(), (int64_t) h.size());
+    ggml_backend_tensor_set(m, h.data(), 0, h.size() * sizeof(ggml_fp16_t));
 }
 
 static ggml_tensor * pt_linear(ggml_context * ctx, ggml_tensor * w, ggml_tensor * b, ggml_tensor * x) {
@@ -52,13 +73,14 @@ static PTQKV pt_qkv(ggml_context *   ctx,
                     ggml_tensor *    h,
                     int              n_heads,
                     float            max_period,
-                    ggml_tensor *    pos) {
+                    ggml_tensor *    pos,
+                    const PTOpts &   o) {
     const int64_t C  = h->ne[0];
     const int64_t T  = h->ne[1];
     const int64_t hd = C / n_heads;
     const size_t  es = ggml_element_size(h);
 
-    ggml_tensor * proj = ggml_mul_mat(ctx, L.in_proj, h);  // [3C, T]
+    ggml_tensor * proj = pt_clamp(ctx, ggml_mul_mat(ctx, L.in_proj, h), o);  // [3C, T]
     ggml_tensor * q    = ggml_view_3d(ctx, proj, hd, n_heads, T, hd * es, proj->nb[1], 0);
     ggml_tensor * k    = ggml_view_3d(ctx, proj, hd, n_heads, T, hd * es, proj->nb[1], C * es);
 
@@ -82,31 +104,37 @@ static ggml_tensor * pt_attn(ggml_context * ctx,
                              ggml_tensor *  vals,
                              int64_t        n_kv,
                              ggml_tensor *  mask,
-                             int            n_heads) {
+                             int            n_heads,
+                             const PTOpts & o) {
     const int64_t hd = q->ne[0];
     const int64_t T  = q->ne[1];
     const size_t  es = ggml_element_size(keys);
 
-    ggml_tensor * k  = ggml_view_3d(ctx, keys, hd, n_kv, n_heads, keys->nb[1], hd * es, 0);
-    ggml_tensor * v  = ggml_view_3d(ctx, vals, hd, n_kv, n_heads, vals->nb[1], hd * es, 0);
+    ggml_tensor * k = ggml_view_3d(ctx, keys, hd, n_kv, n_heads, keys->nb[1], hd * es, 0);
+    ggml_tensor * v = ggml_view_3d(ctx, vals, hd, n_kv, n_heads, vals->nb[1], hd * es, 0);
+    if (o.fa) {
+        ggml_tensor * a = ggml_flash_attn_ext(ctx, q, k, v, mask, 1.0f / sqrtf((float) hd), 0.0f, 0.0f);
+        ggml_prec_set_acc(a, GGML_PREC_F32);
+        return ggml_reshape_2d(ctx, a, hd * n_heads, T);                  // [hd, H, T]
+    }
     ggml_tensor * kq = ggml_mul_mat(ctx, k, q);                           // [S, T, H]
     kq               = ggml_soft_max_ext(ctx, kq, mask, 1.0f / sqrtf((float) hd), 0.0f);
     ggml_tensor * vt = ggml_cont(ctx, ggml_permute(ctx, v, 1, 0, 2, 3));  // [S, hd, H]
-    ggml_tensor * o  = ggml_mul_mat(ctx, vt, kq);                         // [hd, T, H]
+    ggml_tensor * y  = ggml_mul_mat(ctx, vt, kq);                         // [hd, T, H]
     if (T > 1) {
-        o = ggml_cont(ctx, ggml_permute(ctx, o, 0, 2, 1, 3));             // [hd, H, T]
+        y = ggml_cont(ctx, ggml_permute(ctx, y, 0, 2, 1, 3));             // [hd, H, T]
     }
-    return ggml_reshape_2d(ctx, o, hd * n_heads, T);
+    return ggml_reshape_2d(ctx, y, hd * n_heads, T);
 }
 
-static ggml_tensor * pt_ffn(ggml_context * ctx, const TfmLayer & L, ggml_tensor * x) {
+static ggml_tensor * pt_ffn(ggml_context * ctx, const TfmLayer & L, ggml_tensor * x, const PTOpts & o) {
     ggml_tensor * h = pt_layer_norm(ctx, x, L.norm2_w, L.norm2_b, 1e-5f);
     h               = ggml_gelu(ctx, ggml_mul_mat(ctx, L.linear1, h));
     h               = ggml_mul_mat(ctx, L.linear2, h);
     if (L.ls2) {
         h = ggml_mul(ctx, h, L.ls2);
     }
-    return ggml_add(ctx, x, h);
+    return pt_clamp(ctx, ggml_add(ctx, x, h), o);
 }
 
 // Flow LM layer over a linear KV cache. idx [T] I64 are the cache rows of
@@ -122,22 +150,23 @@ static ggml_tensor * pt_tfm_layer_cached(ggml_context *   ctx,
                                          ggml_tensor *    cache_v,
                                          ggml_tensor *    idx,
                                          int64_t          n_kv,
-                                         ggml_tensor *    mask) {
+                                         ggml_tensor *    mask,
+                                         const PTOpts &   o) {
     ggml_tensor * h   = pt_layer_norm(ctx, x, L.norm1_w, L.norm1_b, 1e-5f);
-    PTQKV         qkv = pt_qkv(ctx, L, h, n_heads, max_period, pos);
+    PTQKV         qkv = pt_qkv(ctx, L, h, n_heads, max_period, pos, o);
 
     ggml_tensor * ks = ggml_set_rows(ctx, cache_k, qkv.k, idx);
     ggml_tensor * vs = ggml_set_rows(ctx, cache_v, qkv.v, idx);
     ggml_build_forward_expand(gf, ks);
     ggml_build_forward_expand(gf, vs);
 
-    ggml_tensor * a = pt_attn(ctx, qkv.q, ks, vs, n_kv, mask, n_heads);
+    ggml_tensor * a = pt_attn(ctx, qkv.q, ks, vs, n_kv, mask, n_heads, o);
     a               = ggml_mul_mat(ctx, L.out_proj, a);
     if (L.ls1) {
         a = ggml_mul(ctx, a, L.ls1);
     }
-    x = ggml_add(ctx, x, a);
-    return pt_ffn(ctx, L, x);
+    x = pt_clamp(ctx, ggml_add(ctx, x, a), o);
+    return pt_ffn(ctx, L, x, o);
 }
 
 // Mimi layer over a sliding window. prev_k / prev_v [C, P] are the rows of
@@ -154,9 +183,10 @@ static ggml_tensor * pt_tfm_layer_window(ggml_context *   ctx,
                                          ggml_tensor *    mask,
                                          int              window,
                                          ggml_tensor **   tail_k,
-                                         ggml_tensor **   tail_v) {
+                                         ggml_tensor **   tail_v,
+                                         const PTOpts &   o) {
     ggml_tensor * h   = pt_layer_norm(ctx, x, L.norm1_w, L.norm1_b, 1e-5f);
-    PTQKV         qkv = pt_qkv(ctx, L, h, n_heads, max_period, pos);
+    PTQKV         qkv = pt_qkv(ctx, L, h, n_heads, max_period, pos, o);
 
     ggml_tensor * ks = prev_k ? ggml_concat(ctx, prev_k, qkv.k, 1) : qkv.k;
     ggml_tensor * vc = ggml_cont(ctx, qkv.v);
@@ -167,13 +197,13 @@ static ggml_tensor * pt_tfm_layer_window(ggml_context *   ctx,
     *tail_k            = ggml_view_2d(ctx, ks, ks->ne[0], keep, ks->nb[1], (size_t) (S - keep) * ks->nb[1]);
     *tail_v            = ggml_view_2d(ctx, vs, vs->ne[0], keep, vs->nb[1], (size_t) (S - keep) * vs->nb[1]);
 
-    ggml_tensor * a = pt_attn(ctx, qkv.q, ks, vs, S, mask, n_heads);
+    ggml_tensor * a = pt_attn(ctx, qkv.q, ks, vs, S, mask, n_heads, o);
     a               = ggml_mul_mat(ctx, L.out_proj, a);
     if (L.ls1) {
         a = ggml_mul(ctx, a, L.ls1);
     }
-    x = ggml_add(ctx, x, a);
-    return pt_ffn(ctx, L, x);
+    x = pt_clamp(ctx, ggml_add(ctx, x, a), o);
+    return pt_ffn(ctx, L, x, o);
 }
 
 // Sliding window mask for T queries at absolute positions [p0, p0 + T)
