@@ -46,6 +46,8 @@ static void print_usage(const char * prog) {
             "  --voice <name>          Voice of the requests that name none (default: first voice)\n"
             "  --max-voice-sec <f>     Recording length kept for cloning (default: 30, 0 keeps all)\n"
             "  --alias <name>          Report this model id instead of the GGUF file name\n"
+            "  --no-fa                 Disable flash attention\n"
+            "  --clamp-fp16            Clamp hidden states to FP16 range\n"
             "  --host <ip>             Listen address (default: 127.0.0.1)\n"
             "  --port <n>              Listen port (default: 8080)\n",
             prog);
@@ -109,6 +111,8 @@ int main(int argc, char ** argv) {
     const char *  voices = nullptr;
     const char *  alias  = nullptr;
     server_config cfg;
+    bool          use_fa     = true;
+    bool          clamp_fp16 = false;
     for (int i = 1; i < argc; i++) {
         const char * s   = argv[i];
         const bool   val = i + 1 < argc;
@@ -120,6 +124,10 @@ int main(int argc, char ** argv) {
             g_default_voice = tts_voice_name(argv[++i]);
         } else if (!strcmp(s, "--max-voice-sec") && val) {
             g_max_voice_sec = (float) atof(argv[++i]);
+        } else if (!strcmp(s, "--no-fa")) {
+            use_fa = false;
+        } else if (!strcmp(s, "--clamp-fp16")) {
+            clamp_fp16 = true;
         } else if (!strcmp(s, "--alias") && val) {
             alias = argv[++i];
         } else if (!strcmp(s, "--host") && val) {
@@ -139,6 +147,8 @@ int main(int argc, char ** argv) {
     pt_init_params ip;
     pt_init_default_params(&ip);
     ip.model_path = model;
+    ip.use_fa     = use_fa;
+    ip.clamp_fp16 = clamp_fp16;
     g_ctx         = pt_init(&ip);
     if (!g_ctx) {
         fprintf(stderr, "[Server] FATAL: %s\n", pt_last_error());

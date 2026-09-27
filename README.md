@@ -94,7 +94,11 @@ reference implementation:
 Generation options: `--seed`, `--temp` (flow noise temperature, pack
 default 0.3, 0 is noise free), `--lsd-steps`, `--eos-threshold`,
 `--frames-after-eos`, `--max-chunk-tokens`. `-o -` streams the WAV to
-stdout.
+stdout, `--stream-by-line` synthesizes each stdin line as it arrives with
+one WAV header per line. Debug: `--no-fa` (manual F32 attention instead
+of flash attention on GPU), `--clamp-fp16` (FP16 range clamps for CUDA
+before Ampere), `--dump <dir>` (intermediate tensors for the cossim
+tests).
 
 OpenAI-compatible server (`tts-server`): `response_format` "pcm"
 streams s16le as it is generated, "wav" returns a one-shot file. The

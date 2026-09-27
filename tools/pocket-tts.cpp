@@ -1,8 +1,9 @@
 // pocket-tts.cpp: CLI wrapper around the pockettts.cpp public ABI.
 // Reads the text from stdin, loads the voice (a predefined voice of the
 // voices GGUF, a WAV recording or a voice state .safetensors), synthesizes
-// and writes a WAV file, or streams it to stdout with -o -. --export-voice
-// writes the voice state for later runs and for the reference.
+// and writes a WAV file, or streams it to stdout with -o -, one utterance
+// per stdin line with --stream-by-line. --export-voice writes the voice
+// state for later runs and for the reference.
 
 #include "audio-io.h"
 #include "pocket.h"
@@ -32,7 +33,8 @@ static void print_usage(const char * prog) {
             "  -o <path>                 Output WAV, '-' streams to stdout (default: out.wav)\n"
             "  --format <fmt>            wav16, wav24 or wav32 (default: wav16)\n"
             "  --export-voice <path>     Write the voice state to a .safetensors file\n"
-            "  --max-voice-sec <f>       Recording length kept for cloning (default: 30, 0 keeps all)\n\n"
+            "  --max-voice-sec <f>       Recording length kept for cloning (default: 30, 0 keeps all)\n"
+            "  --stream-by-line          Synthesize each stdin line as it arrives, one WAV header per line (-o '-')\n\n"
             "Generation:\n"
             "  --seed <n>                Noise seed (default: random)\n"
             "  --temp <f>                Flow noise temperature (default: pack value)\n"
@@ -41,18 +43,23 @@ static void print_usage(const char * prog) {
             "  --frames-after-eos <n>    Frames kept after EOS (default: from the text)\n"
             "  --max-chunk-tokens <n>    Text chunk budget in tokens (default: 50)\n\n"
             "Debug:\n"
+            "  --no-fa                   Disable flash attention\n"
+            "  --clamp-fp16              Clamp hidden states to FP16 range\n"
             "  --dump <dir>              Dump intermediate tensors (f32) to <dir>\n",
             prog);
 }
 
 struct Args {
-    const char *  model         = nullptr;
-    const char *  voice         = nullptr;
-    const char *  voices        = nullptr;
-    const char *  out           = "out.wav";
-    const char *  format        = "wav16";
-    const char *  export_voice  = nullptr;
-    float         max_voice_sec = 30.0f;
+    const char *  model          = nullptr;
+    const char *  voice          = nullptr;
+    const char *  voices         = nullptr;
+    const char *  out            = "out.wav";
+    const char *  format         = "wav16";
+    const char *  export_voice   = nullptr;
+    float         max_voice_sec  = 30.0f;
+    bool          stream_by_line = false;
+    bool          use_fa         = true;
+    bool          clamp_fp16     = false;
     pt_tts_params tts;
 };
 
@@ -67,6 +74,12 @@ static bool parse_args(int argc, char ** argv, Args & a) {
             a.voice = argv[++i];
         } else if (!strcmp(s, "--voices") && val) {
             a.voices = argv[++i];
+        } else if (!strcmp(s, "--stream-by-line")) {
+            a.stream_by_line = true;
+        } else if (!strcmp(s, "--no-fa")) {
+            a.use_fa = false;
+        } else if (!strcmp(s, "--clamp-fp16")) {
+            a.clamp_fp16 = true;
         } else if (!strcmp(s, "--dump") && val) {
             a.tts.dump_dir = argv[++i];
         } else if (!strcmp(s, "-o") && val) {
@@ -126,6 +139,8 @@ int main(int argc, char ** argv) {
     pt_init_params ip;
     pt_init_default_params(&ip);
     ip.model_path  = a.model;
+    ip.use_fa      = a.use_fa;
+    ip.clamp_fp16  = a.clamp_fp16;
     pt_context * c = pt_init(&ip);
     if (!c) {
         fprintf(stderr, "[CLI] ERROR: %s\n", pt_last_error());
@@ -155,18 +170,22 @@ int main(int argc, char ** argv) {
         fprintf(stderr, "[CLI] Voice state -> %s\n", a.export_voice);
     }
 
-    std::string text = read_stdin_text();
-    if (text.empty()) {
-        fprintf(stderr, "[CLI] ERROR: stdin is empty, nothing to synthesize\n");
-        pt_voice_free(v);
-        pt_free(c);
-        return 1;
+    const bool  stream    = !strcmp(a.out, "-");
+    const bool  line_mode = a.stream_by_line && stream;
+    std::string text;
+    if (!line_mode) {
+        text = read_stdin_text();
+        if (text.empty()) {
+            fprintf(stderr, "[CLI] ERROR: stdin is empty, nothing to synthesize\n");
+            pt_voice_free(v);
+            pt_free(c);
+            return 1;
+        }
     }
     a.tts.text  = text.c_str();
     a.tts.voice = v;
 
-    int  rc     = 0;
-    bool stream = !strcmp(a.out, "-");
+    int rc = 0;
     if (stream) {
         wav_stream ws = {};
         if (!wav_stream_open_stdout(&ws, pt_sample_rate(c), fmt)) {
@@ -176,7 +195,43 @@ int main(int argc, char ** argv) {
                 return wav_stream_write((wav_stream *) ud, s, n);
             };
             a.tts.user_data = &ws;
-            if (pt_synthesize(c, &a.tts, nullptr) != PT_STATUS_OK) {
+            if (line_mode) {
+                // One utterance per line; every line after the first opens
+                // with a fresh RIFF header on the same stream.
+#if defined(_WIN32)
+                _setmode(_fileno(stdin), _O_BINARY);
+#endif
+                char        buf[4096];
+                std::string line;
+                bool        need_header = false;
+                bool        eof         = false;
+                while (!eof && rc == 0) {
+                    eof = fgets(buf, sizeof(buf), stdin) == nullptr;
+                    if (!eof) {
+                        line += buf;
+                    }
+                    if ((line.empty() || line.back() != '\n') && !eof) {
+                        continue;
+                    }
+                    utf8_normalize(line);
+                    while (!line.empty() && (line.back() == '\n' || line.back() == '\r')) {
+                        line.pop_back();
+                    }
+                    if (!line.empty()) {
+                        if (need_header && !wav_stream_write_header(&ws)) {
+                            rc = 1;
+                            break;
+                        }
+                        a.tts.text = line.c_str();
+                        if (pt_synthesize(c, &a.tts, nullptr) != PT_STATUS_OK) {
+                            fprintf(stderr, "[CLI] ERROR: %s\n", pt_last_error());
+                            rc = 1;
+                        }
+                        need_header = true;
+                    }
+                    line.clear();
+                }
+            } else if (pt_synthesize(c, &a.tts, nullptr) != PT_STATUS_OK) {
                 fprintf(stderr, "[CLI] ERROR: %s\n", pt_last_error());
                 rc = 1;
             }
