@@ -91,7 +91,9 @@ KV rows of the reference voice state file.
   arena so CUDA graph replay applies.
 - Mimi decoder: a persistent state buffer (conv tails, transposed conv
   carries, transformer windows) cleared at each chunk; latents decode
-  in blocks of 1, 2, 4, 8 then 16 frames.
+  in blocks of 1, 2, 4, 8 then 16 frames. The audio of the first frame of
+  every chunk is dropped: the first latent after BOS carries an onset
+  transient ahead of the speech, a click once the chunk follows audio.
 - Noise: `torch-rng.h` reproduces `torch.manual_seed` + `normal_` on a
   CPU float tensor (MT19937, 24 bit uniforms, Box-Muller over blocks of
   16). Each text prefill draws one discarded noise vector like the
