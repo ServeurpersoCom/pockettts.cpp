@@ -15,7 +15,8 @@
 [GGUF] ../models/pocket-tts-english_2026-09-Q8_0.gguf: 214 tensors, data at offset 89632
 [WeightCtx] Loaded 213 tensors, 121.6 MB into backend
 [Load] ../models/pocket-tts-english_2026-09-Q8_0.gguf: flow 6 layers x 1024, head 6 x 512, 2 time conds, Mimi 24000 Hz / 12.5 Hz
-[Load] Ready in 199 ms
+[Load] Flash attention: on, FP16 clamp: off
+[Load] Ready in 174 ms
 [GGUF] ../models/pocket-tts-english_2026-09-voices.gguf: 54 tensors, data at offset 3200
 [Voice] alba: 126 prompt frames
 [Debug] voice-k0: [126, 1024] first4: -0.004105 0.001376 0.008414 0.002834
@@ -23,25 +24,25 @@
 [FlowLM] KV cache: 512 rows, 24.0 MB
 [Debug] prompt-ids: [43] first4: 2994.000000 578.000000 263.000000 268.000000
 [Debug] text-embed: [43, 1024] first4: -0.003605 -0.004419 -0.002675 0.009536
-[Debug] step0-hidden: [1024] first4: -0.128094 -0.685351 0.371587 -0.281033
-[Debug] step0-latent: [32] first4: -1.765835 -1.000568 -0.091135 -0.049212
-[TTS] chunk 1/2: 43 tokens, prefill 188.8 ms, 90 frames, EOS at 87
-[TTS] chunk 2/2: 8 tokens, prefill 368.6 ms, 15 frames, EOS at 12
-[TTS] 8.40 s of audio in 2260 ms (3.7x real time), step 1.59 ms/frame, decode 14.61 ms/frame, seed 42
-[Debug] eos: [107] first4: -9.843379 -11.001986 -12.173667 -12.072910
-[Debug] latents: [105, 32] first4: -1.765835 -1.000568 -0.091135 -0.049212
-[Debug] output-audio: [201600] first4: 0.003366 0.010531 0.019851 0.029050
-[WAV] Wrote cpp/tts/tts-cpp.wav: 201600 samples, 24000 Hz, mono F32
-[CLI] Wrote 201600 samples (8.40 s) -> cpp/tts/tts-cpp.wav
-[GGML] Frames: 105
-[GGML] Audio: 201600 samples 24000 Hz 8.40s -> cpp/tts/tts-cpp.wav
+[Debug] step0-hidden: [1024] first4: -0.128034 -0.684839 0.372085 -0.281476
+[Debug] step0-latent: [32] first4: -1.765971 -1.000620 -0.091412 -0.050790
+[TTS] chunk 1/2: 43 tokens, prefill 7.4 ms, 91 frames, EOS at 88
+[TTS] chunk 2/2: 8 tokens, prefill 0.8 ms, 18 frames, EOS at 15
+[TTS] 8.72 s of audio in 255 ms (34.2x real time), step 0.58 ms/frame, decode 1.66 ms/frame, seed 42
+[Debug] eos: [111] first4: -9.844483 -11.002470 -12.173792 -12.071887
+[Debug] latents: [109, 32] first4: -1.765971 -1.000620 -0.091412 -0.050790
+[Debug] output-audio: [209280] first4: 0.003369 0.010512 0.019814 0.028970
+[WAV] Wrote cpp/tts/tts-cpp.wav: 209280 samples, 24000 Hz, mono F32
+[CLI] Wrote 209280 samples (8.72 s) -> cpp/tts/tts-cpp.wav
+[GGML] Frames: 109
+[GGML] Audio: 209280 samples 24000 Hz 8.72s -> cpp/tts/tts-cpp.wav
 [Cossim] PromptIDs exact: 100.00% (43 values)
 [Cossim] TextEmbed cos: 0.999985 max: 3.2711e-04 mean: 7.1292e-05
 [Cossim] VoiceK0 cos: 1.000000 max: 0.0000e+00 mean: 0.0000e+00
 [Cossim] VoiceVLast cos: 1.000000 max: 0.0000e+00 mean: 0.0000e+00
-[Cossim] Step0Hidden cos: 0.999953 max: 1.9035e-02 mean: 4.1692e-03
-[Cossim] Step0Latent cos: 0.999945 max: 2.4438e-02 mean: 1.0568e-02
-[Cossim] Eos cos: 0.993482 max: 7.4196e+00 mean: 4.2698e-01
-[Cossim] Latents cos: 0.987975 max: 2.2329e+00 mean: 7.3977e-02
-[Cossim] Audio cos: 0.718496
-[Cossim] WAV stft_cos: 0.903492 samples: 201600
+[Cossim] Step0Hidden cos: 0.999953 max: 1.9425e-02 mean: 4.1752e-03
+[Cossim] Step0Latent cos: 0.999945 max: 2.5487e-02 mean: 1.0487e-02
+[Cossim] Eos cos: 0.956539 max: 1.8013e+01 mean: 8.8676e-01
+[Cossim] Latents cos: 0.847407 max: 8.0714e+00 mean: 2.3948e-01
+[Cossim] Audio cos: 0.545955
+[Cossim] WAV stft_cos: 0.751716 samples: 201600
