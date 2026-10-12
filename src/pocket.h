@@ -37,7 +37,7 @@ extern "C" {
 // Struct ABI version. Callers fill `.abi_version = PT_ABI_VERSION` (or let
 // the pt_*_default_params helpers set it); an entry rejects any struct
 // outside [PT_ABI_MIN_VERSION, PT_ABI_VERSION].
-#define PT_ABI_VERSION     1
+#define PT_ABI_VERSION     2
 #define PT_ABI_MIN_VERSION 1
 
 // "<git-hash> (<date>)" of the commit this binary was built from.
@@ -89,9 +89,11 @@ struct pt_init_params {
     const char * model_path;  // pocket-tts-<pack>-<type>.gguf
     bool         use_fa;
     bool         clamp_fp16;
+    const char * device;  // GGML device by name (CUDA0, Vulkan0, MTL0, CPU...),
+                          // NULL for the best available one, since ABI 2
 };
 
-// Defaults: model_path NULL, use_fa true, clamp_fp16 false.
+// Defaults: model_path NULL, use_fa true, clamp_fp16 false, device NULL.
 PT_API void                pt_init_default_params(struct pt_init_params * p);
 PT_API struct pt_context * pt_init(const struct pt_init_params * params);
 PT_API void                pt_free(struct pt_context * ctx);

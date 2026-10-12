@@ -322,7 +322,9 @@ struct pt_context * pt_init(const struct pt_init_params * params) {
     GGUFModel    gf = {};
     try {
         Timer t;
-        c->backend = backend_init();
+        // The device field exists from ABI 2, an older struct takes the
+        // best available device.
+        c->backend = backend_init(params->abi_version >= 2 ? params->device : nullptr);
         if (!c->backend) {
             pt_throw("pt_init: no backend");
         }

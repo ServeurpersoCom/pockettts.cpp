@@ -1,5 +1,6 @@
 #!/bin/bash
 # Start the pockettts OpenAI-compatible TTS server.
+# Multi-GPU: add --device <name> below (CUDA0, CUDA1, Vulkan0, CPU)
 
 ../build/tts-server \
     --model ../models/pocket-tts-english_2026-09-Q8_0.gguf \

@@ -68,8 +68,8 @@ KV rows of the reference voice state file.
 
 ## Inference
 
-- One backend per context (best device or `GGML_BACKEND`), no
-  scheduler: every graph runs whole on it or fails.
+- One backend per context (the `--device` one or the best available),
+  no scheduler: every graph runs whole on it or fails.
 - Attention: `ggml_flash_attn_ext` with an F32 accumulator on GPU
   backends, the explicit F32 chain on CPU and with `--no-fa`; masks are
   F16. `--clamp-fp16` clamps the qkv projection and the residual stream

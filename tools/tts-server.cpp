@@ -9,6 +9,7 @@
 
 #include "tts-server.h"
 
+#include "backend.h"
 #include "gguf.h"
 #include "pocket.h"
 #include "utf8.h"
@@ -42,6 +43,8 @@ static void print_usage(const char * prog) {
             "Required:\n"
             "  --model <gguf>          Language pack GGUF (pocket-tts-<pack>-<quant>.gguf)\n\n"
             "Optional:\n"
+            "  --device <name>         Compute device: CUDA0, Vulkan0, MTL0, CPU...\n"
+            "                          (default: best available)\n"
             "  --voices <gguf>         Predefined voices of the pack (pocket-tts-<pack>-voices.gguf)\n"
             "  --voice <name>          Voice of the requests that name none (default: first voice)\n"
             "  --max-voice-sec <f>     Recording length kept for cloning (default: 30, 0 keeps all)\n"
@@ -110,6 +113,7 @@ int main(int argc, char ** argv) {
     const char *  model  = nullptr;
     const char *  voices = nullptr;
     const char *  alias  = nullptr;
+    const char *  device = nullptr;
     server_config cfg;
     bool          use_fa     = true;
     bool          clamp_fp16 = false;
@@ -120,6 +124,8 @@ int main(int argc, char ** argv) {
             model = argv[++i];
         } else if (!strcmp(s, "--voices") && val) {
             voices = argv[++i];
+        } else if (!strcmp(s, "--device") && val) {
+            device = argv[++i];
         } else if (!strcmp(s, "--voice") && val) {
             g_default_voice = tts_voice_name(argv[++i]);
         } else if (!strcmp(s, "--max-voice-sec") && val) {
@@ -143,12 +149,17 @@ int main(int argc, char ** argv) {
         print_usage(argv[0]);
         return 1;
     }
+    if (device && !backend_check_device(device)) {
+        print_usage(argv[0]);
+        return 1;
+    }
 
     pt_init_params ip;
     pt_init_default_params(&ip);
     ip.model_path = model;
     ip.use_fa     = use_fa;
     ip.clamp_fp16 = clamp_fp16;
+    ip.device     = device;
     g_ctx         = pt_init(&ip);
     if (!g_ctx) {
         fprintf(stderr, "[Server] FATAL: %s\n", pt_last_error());

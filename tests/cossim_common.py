@@ -241,6 +241,7 @@ def run(case, voice_ref, voice_args):
     ap.add_argument("--pack",   default="english_2026-09")
     ap.add_argument("--seed",   type=int, default=42)
     ap.add_argument("--quant",  default="F32", help="GGUF quantization suffix (F32, BF16, Q8_0, Q4_K_M)")
+    ap.add_argument("--device", default=None, help="GGML device passed to pocket-tts (default: best available)")
     args = ap.parse_args()
 
     dump_pt  = f"python/{case}"
@@ -278,6 +279,8 @@ def run(case, voice_ref, voice_args):
 
     cmd = [BIN, "--model", gguf, *voice_args(args.pack), "--seed", str(args.seed),
            "--dump", dump_cpp, "--format", "wav32", "-o", out_cpp]
+    if args.device:
+        cmd += ["--device", args.device]
     print(f"[GGML] Cmd: {' '.join(cmd)}")
     r = subprocess.run(cmd, input=text, text=True)
     if r.returncode != 0:

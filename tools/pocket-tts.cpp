@@ -6,6 +6,7 @@
 // state for later runs and for the reference.
 
 #include "audio-io.h"
+#include "backend.h"
 #include "pocket.h"
 #include "utf8.h"
 
@@ -29,6 +30,8 @@ static void print_usage(const char * prog) {
             "  --model <gguf>            Language pack GGUF (pocket-tts-<pack>-<quant>.gguf)\n"
             "  --voice <name|path>       Voice of --voices, recording (.wav) or voice state (.safetensors)\n\n"
             "Optional:\n"
+            "  --device <name>           Compute device: CUDA0, Vulkan0, MTL0, CPU...\n"
+            "                            (default: best available)\n"
             "  --voices <gguf>           Predefined voices of the pack (pocket-tts-<pack>-voices.gguf)\n"
             "  -o <path>                 Output WAV, '-' streams to stdout (default: out.wav)\n"
             "  --format <fmt>            wav16, wav24 or wav32 (default: wav16)\n"
@@ -53,6 +56,7 @@ struct Args {
     const char *  model          = nullptr;
     const char *  voice          = nullptr;
     const char *  voices         = nullptr;
+    const char *  device         = nullptr;
     const char *  out            = "out.wav";
     const char *  format         = "wav16";
     const char *  export_voice   = nullptr;
@@ -74,6 +78,8 @@ static bool parse_args(int argc, char ** argv, Args & a) {
             a.voice = argv[++i];
         } else if (!strcmp(s, "--voices") && val) {
             a.voices = argv[++i];
+        } else if (!strcmp(s, "--device") && val) {
+            a.device = argv[++i];
         } else if (!strcmp(s, "--stream-by-line")) {
             a.stream_by_line = true;
         } else if (!strcmp(s, "--no-fa")) {
@@ -106,7 +112,7 @@ static bool parse_args(int argc, char ** argv, Args & a) {
             return false;
         }
     }
-    return a.model && a.voice;
+    return a.model && a.voice && (!a.device || backend_check_device(a.device));
 }
 
 static std::string read_stdin_text() {
@@ -141,6 +147,7 @@ int main(int argc, char ** argv) {
     ip.model_path  = a.model;
     ip.use_fa      = a.use_fa;
     ip.clamp_fp16  = a.clamp_fp16;
+    ip.device      = a.device;
     pt_context * c = pt_init(&ip);
     if (!c) {
         fprintf(stderr, "[CLI] ERROR: %s\n", pt_last_error());
