@@ -185,3 +185,15 @@ target_include_directories(test-abi-c PRIVATE
 )
 target_link_libraries(test-abi-c PRIVATE pocket-core)
 link_ggml_backends(test-abi-c)
+
+# test-onset: loads a model and checks that every generated frame reaches
+# the output. Run by hand: test-onset <model.gguf> <voices.gguf> <voice>.
+add_executable(test-onset tests/onset.c)
+set_target_properties(test-onset PROPERTIES
+    C_STANDARD 99
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+target_include_directories(test-onset PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(test-onset PRIVATE pocket-core)
+link_ggml_backends(test-onset)
