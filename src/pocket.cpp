@@ -7,10 +7,9 @@
 // until EOS (ignored on the first frames) plus frames_after_eos, or until
 // the length budget of the chunk. Latents stream into the Mimi decoder,
 // whose state restarts at every chunk, in blocks growing 1, 2, 4 ... 16
-// frames. The audio of the first frame of every chunk is dropped (its
-// latent is still decoded): the first latent after BOS reproduces the Mimi
-// encoder cold start frame that opens the training sequences and decodes
-// to a short click ahead of the speech.
+// frames. The first 5 ms of every chunk fade in: a fresh Mimi decoder
+// state puts a small step in its first samples, heard as a click. Speech
+// can start in the first frame, so the frame itself is kept.
 //
 // The noise of every step comes from a torch compatible generator seeded
 // once per synthesis; each text prefill draws one discarded noise vector
@@ -590,23 +589,21 @@ int pt_synthesize(struct pt_context * c, const struct pt_tts_params * p, struct 
     Timer              t_all;
     bool               cancelled = false;
 
-    // skip counts the samples of the chunk start still to drop.
-    size_t skip = 0;
-    auto   emit = [&](const std::vector<float> & a) -> bool {
-        const size_t  drop = a.size() < skip ? a.size() : skip;
-        const float * s    = a.data() + drop;
-        const size_t  n    = a.size() - drop;
-        skip -= drop;
-        if (n == 0) {
-            return true;
+    // faded counts the samples of the chunk start already faded in, as the
+    // reference does with torch.linspace(0, 1, sample_rate / 200).
+    const size_t n_fade = (size_t) hp.sample_rate / 200;
+    size_t       faded  = 0;
+    auto         emit   = [&](std::vector<float> & a) -> bool {
+        for (size_t i = 0; i < a.size() && faded < n_fade; i++, faded++) {
+            a[i] *= (float) faded / (float) (n_fade - 1);
         }
         if (out) {
-            all.insert(all.end(), s, s + n);
+            all.insert(all.end(), a.begin(), a.end());
         }
         if (dump.enabled) {
-            dump_audio.insert(dump_audio.end(), s, s + n);
+            dump_audio.insert(dump_audio.end(), a.begin(), a.end());
         }
-        return !p->on_chunk || p->on_chunk(s, (int) n, p->user_data);
+        return !p->on_chunk || p->on_chunk(a.data(), (int) a.size(), p->user_data);
     };
 
     for (size_t ci = 0; ci < chunks.size() && !cancelled; ci++) {
@@ -640,7 +637,7 @@ int pt_synthesize(struct pt_context * c, const struct pt_tts_params * p, struct 
         const double ms_pre = t_pre.ms();
 
         mimi_state_reset(&c->ms);
-        skip = (size_t) hp.frame_size;
+        faded = 0;
         latent.assign(c->w.bos_emb.begin(), c->w.bos_emb.end());
         pending.clear();
         int n_past   = vo.n + ntok;
