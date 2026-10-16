@@ -160,7 +160,9 @@ through the callback. `pt_synthesize` is thread safe; concurrent calls
 on one context run one after the other.
 
 `tests/abi-c.c` is built with `-std=c99 -Wall -Werror -pedantic` on
-every build (the `test-abi-c` target). For a binding-friendly shared
+every build (the `test-abi-c` target). `test-onset <model.gguf>
+<voices.gguf> <voice>` loads a model and checks that every generated
+frame reaches the output. For a binding-friendly shared
 library, configure with `cmake -DPOCKET_SHARED=ON ...`: it exports only
 the `pt_*` symbols.
 
