@@ -1,8 +1,9 @@
 build/
+/.venv
 *.wav
 
 tests/*/
 
 checkpoints/
-models/*.gguf
+models/
 __pycache__/

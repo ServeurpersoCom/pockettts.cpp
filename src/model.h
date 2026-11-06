@@ -34,14 +34,20 @@ struct PTOpts {
 
 struct PTHparams {
     // flow LM
-    int   dim;
-    int   n_layers;
-    int   n_heads;
-    int   ffn_dim;
-    float max_period;
-    int   ldim;
-    int   n_bins;
-    bool  bos_before_voice;
+    std::string flow_type;  // "lsd" | "flow_matching" | "drifting" | "pointwise"
+    int         dim;
+    int         n_layers;
+    int         n_heads;
+    int         ffn_dim;
+    float       max_period;
+    int         ldim;
+    int         n_bins;
+    bool        bos_before_voice;
+
+    // grouped-query attention geometry (== dim / n_heads when no GQA)
+    int attn_dim;     // total query head space = n_heads * hd
+    int num_kv_heads; // KV head count (== n_heads when no GQA)
+    int kv_dim;       // = (attn_dim / n_heads) * num_kv_heads
 
     // flow head
     int head_dim;
@@ -63,10 +69,14 @@ struct PTHparams {
     int              inner_dim;
     int              outer_dim;
     int              tfm_dim;
-    int              tfm_n_layers;
+    int              tfm_n_layers;     // decoder transformer layers (drives dec state)
+    int              enc_tfm_n_layers;  // encoder transformer layers (may be < tfm_n_layers)
+    int              enc_tfm_dim;       // encoder transformer dim (asymmetric Mimi: may > tfm_dim)
+    int              enc_tfm_n_heads;   // encoder transformer heads (enc_tfm_dim / head_dim)
     int              tfm_n_heads;
     int              tfm_ffn_dim;
-    int              tfm_context;
+    int              tfm_context;       // encoder transformer context window
+    int              dec_tfm_context;   // decoder transformer context (asymmetric Mimi: may < tfm_context)
     float            tfm_max_period;
 
     // text preparation and generation defaults of the pack
@@ -78,6 +88,7 @@ struct PTHparams {
     std::vector<std::string> replace_to;
     int                      frames_after_eos;
     float                    temperature;
+    float                    eos_threshold;  // logit gate for end-of-speech
 
     // derived
     int hop_length;       // product of the SEANet ratios, samples per encoder frame
@@ -146,7 +157,8 @@ struct SeanetStage {
 
 struct PTWeights {
     // flow LM
-    ggml_tensor *         embed;
+    ggml_tensor *         embed;       // [n_bins+1, rank] (rank = dim when full)
+    ggml_tensor *         cond_proj;   // optional low-rank proj [dim, rank]; null when full rank
     ggml_tensor *         input_linear;
     ggml_tensor *         bos_before_voice;
     ggml_tensor *         speaker_proj;
@@ -154,6 +166,7 @@ struct PTWeights {
     ggml_tensor *         emb_std;
     ggml_tensor *         out_norm_w;
     ggml_tensor *         out_norm_b;
+    ggml_tensor *         z_proj;      // optional bias-free [z_dim, dim]; null when absent
     ggml_tensor *         out_eos_w;
     ggml_tensor *         out_eos_b;
     std::vector<TfmLayer> layers;
@@ -229,6 +242,14 @@ static std::vector<std::string> pt_str_array(const GGUFModel & gf, const char * 
 }
 
 static void pt_load_hparams(PTHparams * hp, const GGUFModel & gf) {
+    // flow type: absent in pre-GQA files -> legacy LSD path.
+    const char * ft = gf_get_str(gf, "pocket.flow.type");
+    if (ft[0]) {
+        hp->flow_type.assign(ft);
+    } else {
+        hp->flow_type = "lsd";
+    }
+
     hp->dim              = (int) pt_req_u32(gf, "pocket.flow.dim");
     hp->n_layers         = (int) pt_req_u32(gf, "pocket.flow.n_layers");
     hp->n_heads          = (int) pt_req_u32(gf, "pocket.flow.n_heads");
@@ -237,6 +258,16 @@ static void pt_load_hparams(PTHparams * hp, const GGUFModel & gf) {
     hp->ldim             = (int) pt_req_u32(gf, "pocket.flow.ldim");
     hp->n_bins           = (int) pt_req_u32(gf, "pocket.flow.n_bins");
     hp->bos_before_voice = pt_req_bool(gf, "pocket.flow.bos_before_voice");
+
+    // GQA geometry: absent in pre-GQA files -> square heads, kv == q.
+    {
+        int64_t i_adim = gguf_find_key(gf.gguf, "pocket.flow.attn_dim");
+        hp->attn_dim   = i_adim < 0 ? hp->dim : (int) gguf_get_val_u32(gf.gguf, i_adim);
+        int64_t i_nkv  = gguf_find_key(gf.gguf, "pocket.flow.num_kv_heads");
+        hp->num_kv_heads = i_nkv < 0 ? hp->n_heads : (int) gguf_get_val_u32(gf.gguf, i_nkv);
+        int64_t i_kdim = gguf_find_key(gf.gguf, "pocket.flow.kv_dim");
+        hp->kv_dim     = i_kdim < 0 ? hp->dim : (int) gguf_get_val_u32(gf.gguf, i_kdim);
+    }
     hp->head_dim         = (int) pt_req_u32(gf, "pocket.head.dim");
     hp->head_depth       = (int) pt_req_u32(gf, "pocket.head.depth");
     hp->n_time_conds     = (int) pt_req_u32(gf, "pocket.head.n_time_conds");
@@ -256,8 +287,42 @@ static void pt_load_hparams(PTHparams * hp, const GGUFModel & gf) {
     hp->tfm_dim                  = (int) pt_req_u32(gf, "pocket.mimi.tfm.dim");
     hp->tfm_n_layers             = (int) pt_req_u32(gf, "pocket.mimi.tfm.n_layers");
     hp->tfm_n_heads              = (int) pt_req_u32(gf, "pocket.mimi.tfm.n_heads");
+    // The encoder transformer may have fewer layers than the decoder. The shared
+    // pocket.mimi.tfm.n_layers key describes the DECODER; derive the actual
+    // encoder layer count from tensor presence (contiguous from index 0).
+    {
+        int enc_n = 0;
+        for (int i = 0; i < hp->tfm_n_layers; i++) {
+            const std::string probe = "mimi.encoder_transformer.transformer.layers." + std::to_string(i) + ".norm1.weight";
+            if (gguf_find_tensor(gf.gguf, probe.c_str()) < 0) {
+                break;
+            }
+            enc_n++;
+        }
+        hp->enc_tfm_n_layers = enc_n;
+    }
+    // Asymmetric Mimi (e.g. *_2026-10* refl packs): the encoder transformer can be
+    // WIDER than the decoder. The shared pocket.mimi.tfm.* keys describe the DECODER
+    // only, so derive the encoder's own dim from its norm tensor and its head count
+    // from the decoder's head_dim.
+    {
+        int head_dim = hp->tfm_n_heads > 0 ? hp->tfm_dim / hp->tfm_n_heads : 64;
+        if (head_dim <= 0) head_dim = 64;
+        struct ggml_tensor * enc_norm = ggml_get_tensor(gf.meta, "mimi.encoder_transformer.transformer.layers.0.norm1.weight");
+        hp->enc_tfm_dim     = enc_norm ? (int) enc_norm->ne[0] : hp->tfm_dim;
+        // Prefer the explicit encoder head count (written by convert.py from the
+        // YAML config); fall back to dim/head_dim for pre-asymmetric GGUFs.
+        int64_t i_enh = gguf_find_key(gf.gguf, "pocket.mimi.enc_tfm.n_heads");
+        hp->enc_tfm_n_heads = i_enh >= 0 ? (int) gguf_get_val_u32(gf.gguf, i_enh) :
+                              head_dim > 0 && (hp->enc_tfm_dim % head_dim) == 0 ? hp->enc_tfm_dim / head_dim : hp->tfm_n_heads;
+    }
     hp->tfm_ffn_dim              = (int) pt_req_u32(gf, "pocket.mimi.tfm.ffn_dim");
     hp->tfm_context              = (int) pt_req_u32(gf, "pocket.mimi.tfm.context");
+    // Decoder transformer context: absent in pre-asymmetric GGUFs -> same as encoder.
+    {
+        int64_t i_dctx = gguf_find_key(gf.gguf, "pocket.mimi.dec_tfm.context");
+        hp->dec_tfm_context       = i_dctx < 0 ? hp->tfm_context : (int) gguf_get_val_u32(gf.gguf, i_dctx);
+    }
     hp->tfm_max_period           = pt_req_f32(gf, "pocket.mimi.tfm.max_period");
     std::vector<uint32_t> ratios = gf_get_array_u32(gf, "pocket.mimi.ratios");
     if (ratios.empty()) {
@@ -274,6 +339,12 @@ static void pt_load_hparams(PTHparams * hp, const GGUFModel & gf) {
     int64_t fae                     = gguf_find_key(gf.gguf, "pocket.gen.frames_after_eos");
     hp->frames_after_eos            = fae < 0 ? -1 : gguf_get_val_i32(gf.gguf, fae);
     hp->temperature                 = pt_req_f32(gf, "pocket.gen.temperature");
+
+    // eos logit gate: absent in pre-GQA files -> legacy hardcoded default.
+    {
+        int64_t i_eos = gguf_find_key(gf.gguf, "pocket.gen.eos_threshold");
+        hp->eos_threshold          = i_eos < 0 ? -4.0f : gguf_get_val_f32(gf.gguf, i_eos);
+    }
 
     hp->hop_length = 1;
     for (int r : hp->ratios) {
@@ -408,6 +479,9 @@ static void pt_load_weights(PTWeights * w, const PTHparams & hp, const GGUFModel
     WeightCtx * wc = &w->wctx;
 
     w->embed            = gf_load_tensor(wc, gf, "flow_lm.conditioner.embed.weight");
+    // Low-rank text embedding: a separate proj [dim, rank] is present only for
+    // the small community packs; full-rank models carry no such tensor.
+    w->cond_proj        = gf_try_load_tensor(wc, gf, "flow_lm.conditioner.proj.weight");
     w->input_linear     = gf_load_tensor(wc, gf, "flow_lm.input_linear.weight");
     w->bos_before_voice = hp.bos_before_voice ? gf_load_tensor_f32(wc, gf, "flow_lm.bos_before_voice") : nullptr;
     w->speaker_proj     = gf_load_tensor(wc, gf, "flow_lm.speaker_proj_weight");
@@ -415,6 +489,9 @@ static void pt_load_weights(PTWeights * w, const PTHparams & hp, const GGUFModel
     w->emb_std          = gf_load_tensor_f32(wc, gf, "flow_lm.emb_std");
     w->out_norm_w       = gf_load_tensor_f32(wc, gf, "flow_lm.out_norm.weight");
     w->out_norm_b       = gf_load_tensor_f32(wc, gf, "flow_lm.out_norm.bias");
+    // Optional bias-free z projection applied after out_norm, before the EOS
+    // head and flow conditioning; absent in models without a bottleneck.
+    w->z_proj           = gf_try_load_tensor(wc, gf, "flow_lm.z_proj.weight");
     w->out_eos_w        = gf_load_tensor_f32(wc, gf, "flow_lm.out_eos.weight");
     w->out_eos_b        = gf_load_tensor_f32(wc, gf, "flow_lm.out_eos.bias");
     for (int i = 0; i < hp.n_layers; i++) {
@@ -498,7 +575,7 @@ static void pt_load_weights(PTWeights * w, const PTHparams & hp, const GGUFModel
     }
     idx++;  // ELU
     w->enc_out = pt_load_conv(wc, gf, "mimi.encoder.model." + std::to_string(idx) + ".conv", 1, 1, true);
-    for (int i = 0; i < hp.tfm_n_layers; i++) {
+    for (int i = 0; i < hp.enc_tfm_n_layers; i++) {
         w->enc_layers.push_back(
             pt_load_tfm_layer(wc, gf, "mimi.encoder_transformer.transformer.layers." + std::to_string(i), true));
     }

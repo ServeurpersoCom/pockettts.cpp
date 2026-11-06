@@ -173,7 +173,10 @@ static bool pt_prefill(pt_context *                 c,
     if (ids) {
         src = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, T);
         ggml_set_input(src);
-        x = ggml_get_rows(ctx, c->w.embed, src);
+        x = ggml_get_rows(ctx, c->w.embed, src);  // [rank, T] (rank=dim for full-rank)
+        if (c->w.cond_proj) {                     // low-rank: project to [dim, T]
+            x = ggml_mul_mat(ctx, c->w.cond_proj, x);
+        }
     } else {
         src = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, c->hp.dim, T);
         ggml_set_input(src);
@@ -229,7 +232,8 @@ static bool pt_step(pt_context *  c,
     ggml_backend_tensor_get(st.eos, eos, 0, sizeof(float));
     ggml_backend_tensor_get(st.out, out, 0, (size_t) c->hp.ldim * sizeof(float));
     if (hidden) {
-        ggml_backend_tensor_get(st.hidden, hidden, 0, (size_t) c->hp.dim * sizeof(float));
+        const int64_t hd = st.hidden->ne[0];  // z_dim when z_proj present, else dim
+        ggml_backend_tensor_get(st.hidden, hidden, 0, (size_t) hd * sizeof(float));
     }
     return true;
 }
@@ -426,11 +430,11 @@ struct pt_voice * pt_voice_from_audio(struct pt_context * c, const float * sampl
         return nullptr;
     }
     pt_voice * v      = new pt_voice();
-    v->n_heads        = hp.n_heads;
+    v->n_heads        = hp.num_kv_heads;
     v->st.n_layers    = hp.n_layers;
-    v->st.dim         = hp.dim;
+    v->st.dim         = hp.kv_dim;
     v->st.n           = L;
-    const size_t rows = (size_t) L * hp.dim;
+    const size_t rows = (size_t) L * hp.kv_dim;
     v->st.k.resize(rows * hp.n_layers);
     v->st.v.resize(rows * hp.n_layers);
     for (int l = 0; l < hp.n_layers; l++) {
@@ -450,8 +454,8 @@ struct pt_voice * pt_voice_load(struct pt_context * c, const char * path, float 
     const size_t n = strlen(path);
     if (n > 12 && strcmp(path + n - 12, ".safetensors") == 0) {
         pt_voice * v = new pt_voice();
-        v->n_heads   = c->hp.n_heads;
-        if (!voice_load_safetensors(&v->st, path, c->hp.n_layers, c->hp.dim)) {
+        v->n_heads   = c->hp.num_kv_heads;
+        if (!voice_load_safetensors(&v->st, path, c->hp.n_layers, c->hp.kv_dim)) {
             delete v;
             return nullptr;
         }
@@ -485,8 +489,8 @@ struct pt_voice * pt_voice_named(struct pt_context * c, const char * voices_path
         return nullptr;
     }
     pt_voice * v = new pt_voice();
-    v->n_heads   = c->hp.n_heads;
-    if (!voice_load_gguf(&v->st, voices_path, name, c->hp.n_layers, c->hp.dim)) {
+    v->n_heads   = c->hp.num_kv_heads;
+    if (!voice_load_gguf(&v->st, voices_path, name, c->hp.n_layers, c->hp.kv_dim)) {
         delete v;
         return nullptr;
     }
@@ -501,8 +505,8 @@ struct pt_voice * pt_voice_from_state(struct pt_context * c, const void * data, 
     }
     std::vector<uint8_t> buf((const uint8_t *) data, (const uint8_t *) data + size);
     pt_voice *           v = new pt_voice();
-    v->n_heads             = c->hp.n_heads;
-    if (!voice_parse_safetensors(&v->st, buf, "voice state", c->hp.n_layers, c->hp.dim)) {
+    v->n_heads             = c->hp.num_kv_heads;
+    if (!voice_parse_safetensors(&v->st, buf, "voice state", c->hp.n_layers, c->hp.kv_dim)) {
         delete v;
         return nullptr;
     }
@@ -544,7 +548,7 @@ int pt_synthesize(struct pt_context * c, const struct pt_tts_params * p, struct 
     }
     const PTHparams & hp = c->hp;
     const PTVoice &   vo = p->voice->st;
-    if (vo.n_layers != hp.n_layers || vo.dim != hp.dim) {
+    if (vo.n_layers != hp.n_layers || vo.dim != hp.kv_dim) {
         pt_set_error("pt_synthesize: voice built for another model");
         return PT_STATUS_INVALID_PARAMS;
     }
@@ -651,7 +655,8 @@ int pt_synthesize(struct pt_context * c, const struct pt_tts_params * p, struct 
         for (; step < max_gen; step++) {
             rng.normal(noise.data(), hp.ldim, stdv);
             float              eos = 0.0f;
-            std::vector<float> hidden(dump0 && step == 0 ? hp.dim : 0);
+            const int hdim = c->w.z_proj ? (int) c->w.z_proj->ne[1] : hp.dim;
+            std::vector<float> hidden(dump0 && step == 0 ? hdim : 0);
             Timer              ts;
             if (!pt_step(c, latent.data(), noise.data(), p->lsd_steps, n_past, &eos, next.data(),
                          hidden.empty() ? nullptr : hidden.data())) {
@@ -659,7 +664,7 @@ int pt_synthesize(struct pt_context * c, const struct pt_tts_params * p, struct 
             }
             t_steps += ts.ms();
             if (!hidden.empty()) {
-                debug_dump_1d(&dump, "step0-hidden", hidden.data(), hp.dim);
+                debug_dump_1d(&dump, "step0-hidden", hidden.data(), hdim);
                 debug_dump_1d(&dump, "step0-latent", next.data(), hp.ldim);
             }
             if (dump.enabled) {

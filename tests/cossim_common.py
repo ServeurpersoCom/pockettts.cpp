@@ -26,10 +26,14 @@ torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
 torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = False
 torch.set_float32_matmul_precision("highest")
 
-UPSTREAM_ROOT = "../../pocket-tts"
-CKPT          = "../checkpoints/pocket-tts"
-BIN           = "../build/pocket-tts"
+if (UPSTREAM_ROOT := os.environ.get("POCKETTTS_UPSTREAM_ROOT")) is None:
+    UPSTREAM_ROOT = "../../pocket-tts"
+if (CKPT := os.environ.get("POCKETTTS_CKPT")) is None:
+    CKPT = "../checkpoints/pocket-tts"
+if (BIN := os.environ.get("POCKETTTS_BIN")) is None:
+    BIN = "../build/pocket-tts"
 sys.path.insert(0, UPSTREAM_ROOT)
+
 
 import pocket_tts.models.tts_model as tts_model
 import pocket_tts.utils.utils as utils
@@ -74,7 +78,11 @@ def install_hooks(model):
     norm = fl.out_norm.forward
     def out_norm(x):
         out = norm(x)
-        rec["hidden"].append(out[0, -1].detach().clone())
+        # Match C++ st.hidden: post z_proj when present.
+        if fl.z_proj is not None:
+            rec["hidden"].append(fl.z_proj(out)[0, -1].detach().clone())
+        else:
+            rec["hidden"].append(out[0, -1].detach().clone())
         return out
     fl.out_norm.forward = out_norm
 
@@ -86,13 +94,13 @@ def install_hooks(model):
     fl.out_eos.forward = out_eos
 
     gen = model._autoregressive_generation
-    def autoregressive(model_state, max_gen_len, frames_after_eos, queue, stop):
+    def autoregressive(model_state, max_gen_len, frames_after_eos, queue, stop, latents_out=None, first_input=None):
         class Tee:
             def put(self, x):
                 if x is not None:
                     rec["latents"].append(x.reshape(-1).detach().clone())
                 queue.put(x)
-        return gen(model_state, max_gen_len, frames_after_eos, Tee(), stop)
+        return gen(model_state, max_gen_len, frames_after_eos, Tee(), stop, latents_out, first_input)
     model._autoregressive_generation = autoregressive
     return rec
 
@@ -238,7 +246,7 @@ def run(case, voice_ref, voice_args):
 
     ap = argparse.ArgumentParser()
     ap.add_argument("--prompt", default="../examples/prompt.txt")
-    ap.add_argument("--pack",   default="english_2026-09")
+    ap.add_argument("--pack",   default="english_2026-10")
     ap.add_argument("--seed",   type=int, default=42)
     ap.add_argument("--quant",  default="F32", help="GGUF quantization suffix (F32, BF16, Q8_0, Q4_K_M)")
     ap.add_argument("--device", default=None, help="GGML device passed to pocket-tts (default: best available)")

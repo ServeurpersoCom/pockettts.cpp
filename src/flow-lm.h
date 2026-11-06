@@ -5,17 +5,19 @@
 // embeddings from the speaker projection, or a KV state loaded from file)
 // and the text (lookup table embeddings) are prefilled; each AR step feeds
 // one latent through input_linear and produces:
-//   eos     out_eos(out_norm(h)), compared to the EOS threshold on the host
-//   latent  flow head decode of Gaussian noise conditioned on out_norm(h)
+//   eos     out_eos(z_proj(out_norm(h))) if z_proj present else out_eos(out_norm(h))
+//   latent  flow head decode of Gaussian noise conditioned on the same output
 //
 // Flow head (SimpleMLPAdaLN), decoded in graph for a fixed step count n:
-//   LSD           x += head(c, s = i/n, t = (i+1)/n, x) / n, two time embeddings averaged
-//   flow matching x += head(c, t = i/n, x) / n, one time embedding
+//   lsd            x += head(c, s = i/n, t = (i+1)/n, x) / n, two time embeddings averaged
+//   flow_matching  x += head(c, t = i/n, x) / n, one time embedding
+//   drifting       head(c, x), single eval, no time conditions
+//   pointwise      x + head(c, x), single eval, no time conditions
 // TimestepEmbedder: [cos, sin](t * freqs) -> linear, SiLU, linear -> RMSNorm
 // with the unbiased variance of the reference (x * alpha / sqrt(var + eps)).
 //
-// The KV cache holds K (rotated) and V as rows [C] per position, one pair of
-// [C, capacity] tensors per layer. Voice state files store the same rows.
+// The KV cache holds K (rotated) and V as rows [kv_dim] per position, one pair
+// of [kv_dim, capacity] tensors per layer. Voice state files store the same rows.
 
 #include "ggml-alloc.h"
 #include "ggml-backend.h"
@@ -54,8 +56,8 @@ static bool flow_kv_ensure(FlowKV * kv, const PTHparams & hp, ggml_backend_t bac
     struct ggml_init_params gp  = { ggml_tensor_overhead() * (size_t) (2 * hp.n_layers + 2), nullptr, true };
     kv->ctx                     = ggml_init(gp);
     for (int l = 0; l < hp.n_layers; l++) {
-        kv->k.push_back(ggml_new_tensor_2d(kv->ctx, GGML_TYPE_F32, hp.dim, cap));
-        kv->v.push_back(ggml_new_tensor_2d(kv->ctx, GGML_TYPE_F32, hp.dim, cap));
+        kv->k.push_back(ggml_new_tensor_2d(kv->ctx, GGML_TYPE_F32, hp.kv_dim, cap));
+        kv->v.push_back(ggml_new_tensor_2d(kv->ctx, GGML_TYPE_F32, hp.kv_dim, cap));
     }
     kv->buf = ggml_backend_alloc_ctx_tensors(kv->ctx, backend);
     if (!kv->buf) {
@@ -117,8 +119,8 @@ static ggml_tensor * flow_backbone(ggml_context *     ctx,
                                    int                n_kv,
                                    const PTOpts &     o) {
     for (int l = 0; l < hp.n_layers; l++) {
-        x = pt_tfm_layer_cached(ctx, gf, w.layers[l], x, hp.n_heads, hp.max_period, in.pos, kv.k[l], kv.v[l], in.idx,
-                                n_kv, in.mask, o);
+        x = pt_tfm_layer_cached(ctx, gf, w.layers[l], x, hp.n_heads, hp.num_kv_heads, hp.attn_dim, hp.kv_dim,
+                               hp.max_period, in.pos, kv.k[l], kv.v[l], in.idx, n_kv, in.mask, o);
     }
     return x;
 }
@@ -139,44 +141,61 @@ static ggml_tensor * flow_modulate(ggml_context * ctx, ggml_tensor * x, ggml_ten
     return ggml_add(ctx, ggml_add(ctx, x, ggml_mul(ctx, x, scale)), shift);
 }
 
+// Single forward pass of the flow MLP given conditioning yc and time-embedded y.
+static ggml_tensor * flow_mlp_pass(ggml_context * ctx, const PTWeights & w, int D, ggml_tensor * yc,
+                                   ggml_tensor * te_add, ggml_tensor * x) {
+    const size_t es = sizeof(float);
+    ggml_tensor * y  = te_add ? ggml_add(ctx, yc, te_add) : yc;
+    ggml_tensor * ys = ggml_silu(ctx, y);
+
+    ggml_tensor * h = pt_linear(ctx, w.in_w, w.in_b, x);
+    for (const ResBlock & b : w.blocks) {
+        ggml_tensor * ada   = pt_linear(ctx, b.ada_w, b.ada_b, ys);
+        ggml_tensor * shift = ggml_view_1d(ctx, ada, D, 0);
+        ggml_tensor * scale = ggml_view_1d(ctx, ada, D, D * es);
+        ggml_tensor * gate  = ggml_view_1d(ctx, ada, D, 2 * D * es);
+        ggml_tensor * u     = flow_modulate(ctx, pt_layer_norm(ctx, h, b.ln_w, b.ln_b, 1e-6f), shift, scale);
+        u                   = pt_linear(ctx, b.mlp0_w, b.mlp0_b, u);
+        u                   = pt_linear(ctx, b.mlp2_w, b.mlp2_b, ggml_silu(ctx, u));
+        h                   = ggml_add(ctx, h, ggml_mul(ctx, u, gate));
+    }
+    ggml_tensor * ada   = pt_linear(ctx, w.final_ada_w, w.final_ada_b, ys);
+    ggml_tensor * shift = ggml_view_1d(ctx, ada, D, 0);
+    ggml_tensor * scale = ggml_view_1d(ctx, ada, D, D * es);
+    ggml_tensor * u     = flow_modulate(ctx, pt_layer_norm(ctx, h, nullptr, nullptr, 1e-6f), shift, scale);
+    u                   = pt_linear(ctx, w.final_w, w.final_b, u);
+    return u;  // the raw v_t output before accumulation
+}
+
 static ggml_tensor * flow_head(ggml_context *    ctx,
                                const PTWeights & w,
                                const PTHparams & hp,
                                ggml_tensor *     c,
                                ggml_tensor *     x,
                                int               n_steps) {
-    const int64_t D  = hp.head_dim;
-    const size_t  es = sizeof(float);
+    const int64_t D = hp.head_dim;
     ggml_tensor * yc = pt_linear(ctx, w.cond_w, w.cond_b, c);
-    for (int i = 0; i < n_steps; i++) {
-        const float   s = (float) i / (float) n_steps;
-        const float   t = (float) (i + 1) / (float) n_steps;
-        ggml_tensor * y = yc;
-        if (hp.n_time_conds == 2) {
-            ggml_tensor * te = ggml_add(ctx, flow_time_embed(ctx, w.temb[0], s), flow_time_embed(ctx, w.temb[1], t));
-            y                = ggml_add(ctx, y, ggml_scale(ctx, te, 0.5f));
-        } else if (hp.n_time_conds == 1) {
-            y = ggml_add(ctx, y, flow_time_embed(ctx, w.temb[0], s));
-        }
-        ggml_tensor * ys = ggml_silu(ctx, y);
 
-        ggml_tensor * h = pt_linear(ctx, w.in_w, w.in_b, x);
-        for (const ResBlock & b : w.blocks) {
-            ggml_tensor * ada   = pt_linear(ctx, b.ada_w, b.ada_b, ys);
-            ggml_tensor * shift = ggml_view_1d(ctx, ada, D, 0);
-            ggml_tensor * scale = ggml_view_1d(ctx, ada, D, D * es);
-            ggml_tensor * gate  = ggml_view_1d(ctx, ada, D, 2 * D * es);
-            ggml_tensor * u     = flow_modulate(ctx, pt_layer_norm(ctx, h, b.ln_w, b.ln_b, 1e-6f), shift, scale);
-            u                   = pt_linear(ctx, b.mlp0_w, b.mlp0_b, u);
-            u                   = pt_linear(ctx, b.mlp2_w, b.mlp2_b, ggml_silu(ctx, u));
-            h                   = ggml_add(ctx, h, ggml_mul(ctx, u, gate));
+    const int d = (int) D;
+    if (hp.n_time_conds == 0) {
+        // drifting: output is v_t(x) directly; pointwise: x + v_t(x).
+        ggml_tensor * u = flow_mlp_pass(ctx, w, d, yc, nullptr, x);
+        return hp.flow_type == "pointwise" ? ggml_add(ctx, x, u) : u;
+    }
+
+    // Multi-step Euler integration (lsd: 2 time conds, flow_matching: 1).
+    for (int i = 0; i < n_steps; i++) {
+        const float s = (float) i / (float) n_steps;
+        const float t = (float) (i + 1) / (float) n_steps;
+        ggml_tensor * te = nullptr;
+        if (hp.n_time_conds == 2) {
+            te = ggml_add(ctx, flow_time_embed(ctx, w.temb[0], s), flow_time_embed(ctx, w.temb[1], t));
+            te = ggml_scale(ctx, te, 0.5f);
+        } else if (hp.n_time_conds == 1) {
+            te = flow_time_embed(ctx, w.temb[0], s);
         }
-        ggml_tensor * ada   = pt_linear(ctx, w.final_ada_w, w.final_ada_b, ys);
-        ggml_tensor * shift = ggml_view_1d(ctx, ada, D, 0);
-        ggml_tensor * scale = ggml_view_1d(ctx, ada, D, D * es);
-        ggml_tensor * u     = flow_modulate(ctx, pt_layer_norm(ctx, h, nullptr, nullptr, 1e-6f), shift, scale);
-        u                   = pt_linear(ctx, w.final_w, w.final_b, u);
-        x                   = ggml_add(ctx, x, ggml_scale(ctx, u, 1.0f / (float) n_steps));
+        ggml_tensor * u = flow_mlp_pass(ctx, w, d, yc, te, x);
+        x               = ggml_add(ctx, x, ggml_scale(ctx, u, 1.0f / (float) n_steps));
     }
     return x;
 }
@@ -212,6 +231,12 @@ static FlowStep flow_build_step(ggml_context *    ctx,
     ggml_tensor * x = ggml_mul_mat(ctx, w.input_linear, st.latent);
     x               = flow_backbone(ctx, gf, w, hp, kv, x, st.in, n_kv, o);
     ggml_tensor * c = pt_layer_norm(ctx, x, w.out_norm_w, w.out_norm_b, 1e-5f);
+
+    // Optional z projection: [z_dim, dim] @ [dim, 1] -> [z_dim, 1].
+    // Both the EOS head and flow conditioning consume the projected output.
+    if (w.z_proj) {
+        c = ggml_mul_mat(ctx, w.z_proj, c);
+    }
 
     st.hidden = c;
     st.eos    = pt_linear(ctx, w.out_eos_w, w.out_eos_b, c);

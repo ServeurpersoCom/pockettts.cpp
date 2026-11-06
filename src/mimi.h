@@ -48,8 +48,8 @@ static bool mimi_state_init(MimiState * s, const PTWeights & w, const PTHparams 
     const int K_up             = (int) w.upsample_w->ne[0];
     s->up_carry                = ggml_new_tensor_3d(s->ctx, GGML_TYPE_F32, K_up - hp.upsample_stride, hp.outer_dim, 1);
     for (int l = 0; l < hp.tfm_n_layers; l++) {
-        s->kc.push_back(ggml_new_tensor_2d(s->ctx, GGML_TYPE_F32, hp.tfm_dim, hp.tfm_context));
-        s->vc.push_back(ggml_new_tensor_2d(s->ctx, GGML_TYPE_F32, hp.tfm_dim, hp.tfm_context));
+        s->kc.push_back(ggml_new_tensor_2d(s->ctx, GGML_TYPE_F32, hp.tfm_dim, hp.dec_tfm_context));
+        s->vc.push_back(ggml_new_tensor_2d(s->ctx, GGML_TYPE_F32, hp.tfm_dim, hp.dec_tfm_context));
     }
     s->in_state = mimi_state_conv(s->ctx, w.dec_in);
     for (const SeanetStage & st : w.dec_stages) {
@@ -106,7 +106,7 @@ static MimiDec mimi_build_decode(ggml_context *    ctx,
     MimiDec   d;
     d.latent = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, hp.ldim, n);
     d.pos    = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, T);
-    d.mask   = pt_mask_new(ctx, hp.tfm_context + T, T);
+    d.mask   = pt_mask_new(ctx, hp.dec_tfm_context + T, T);
     ggml_set_input(d.latent);
     ggml_set_input(d.pos);
 
@@ -119,8 +119,8 @@ static MimiDec mimi_build_decode(ggml_context *    ctx,
     for (int l = 0; l < hp.tfm_n_layers; l++) {
         ggml_tensor * tk;
         ggml_tensor * tv;
-        x = pt_tfm_layer_window(ctx, w.dec_layers[l], x, hp.tfm_n_heads, hp.tfm_max_period, d.pos, s.kc[l], s.vc[l],
-                                d.mask, hp.tfm_context, &tk, &tv, o);
+        x = pt_tfm_layer_window(ctx, w.dec_layers[l], x, hp.tfm_n_heads, hp.tfm_n_heads, hp.tfm_dim, hp.tfm_dim,
+                                hp.tfm_max_period, d.pos, s.kc[l], s.vc[l], d.mask, hp.dec_tfm_context, &tk, &tv, o);
         ggml_build_forward_expand(gf, x);
         ggml_build_forward_expand(gf, ggml_cpy(ctx, tk, s.kc[l]));
         ggml_build_forward_expand(gf, ggml_cpy(ctx, tv, s.vc[l]));
@@ -158,8 +158,8 @@ static void mimi_fill_decode(const MimiDec &   d,
         pos[i] = s.pos + i;
     }
     ggml_backend_tensor_set(d.pos, pos.data(), 0, pos.size() * sizeof(int32_t));
-    std::vector<float> mask((size_t) (hp.tfm_context + T) * T);
-    pt_window_mask(mask.data(), hp.tfm_context, T, s.pos, hp.tfm_context);
+    std::vector<float> mask((size_t) (hp.dec_tfm_context + T) * T);
+    pt_window_mask(mask.data(), hp.dec_tfm_context, T, s.pos, hp.dec_tfm_context);
     pt_mask_upload(d.mask, mask.data());
 }
 
@@ -192,27 +192,29 @@ static MimiEnc mimi_build_encode(ggml_context *    ctx,
     }
     x            = pt_conv1d(ctx, w.enc_out, ggml_elu(ctx, x), PT_PAD_ZERO);                      // [Te, C, 1]
     const int Te = (int) x->ne[0];
-    x            = ggml_cont(ctx, ggml_transpose(ctx, ggml_reshape_2d(ctx, x, Te, hp.tfm_dim)));  // [C, Te]
+    // Encoder transformer geometry: asymmetric Mimi packs (e.g. *_2026-10* refl) run a
+    // WIDER encoder than the decoder, so use enc_tfm_dim/enc_tfm_n_heads, not tfm_*.
+    x            = ggml_cont(ctx, ggml_transpose(ctx, ggml_reshape_2d(ctx, x, Te, hp.enc_tfm_dim)));  // [C, Te]
 
     e.pos = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, Te);
     ggml_set_input(e.pos);
 
     const int                  W = hp.tfm_context;
-    std::vector<ggml_tensor *> pk(hp.tfm_n_layers, nullptr);
-    std::vector<ggml_tensor *> pv(hp.tfm_n_layers, nullptr);
+    std::vector<ggml_tensor *> pk(hp.enc_tfm_n_layers, nullptr);
+    std::vector<ggml_tensor *> pv(hp.enc_tfm_n_layers, nullptr);
     ggml_tensor *              y = nullptr;
     for (int b0 = 0; b0 < Te; b0 += W) {
         const int     T = Te - b0 < W ? Te - b0 : W;
         const int     P = b0 == 0 ? 0 : W;
         ggml_tensor * m = pt_mask_new(ctx, P + T, T);
         e.masks.push_back(m);
-        ggml_tensor * xb = ggml_view_2d(ctx, x, hp.tfm_dim, T, x->nb[1], (size_t) b0 * x->nb[1]);
+        ggml_tensor * xb = ggml_view_2d(ctx, x, hp.enc_tfm_dim, T, x->nb[1], (size_t) b0 * x->nb[1]);
         ggml_tensor * pb = ggml_view_1d(ctx, e.pos, T, (size_t) b0 * sizeof(int32_t));
-        for (int l = 0; l < hp.tfm_n_layers; l++) {
+        for (int l = 0; l < hp.enc_tfm_n_layers; l++) {
             ggml_tensor * tk;
             ggml_tensor * tv;
-            xb = pt_tfm_layer_window(ctx, w.enc_layers[l], xb, hp.tfm_n_heads, hp.tfm_max_period, pb, pk[l], pv[l], m,
-                                     W, &tk, &tv, o);
+            xb = pt_tfm_layer_window(ctx, w.enc_layers[l], xb, hp.enc_tfm_n_heads, hp.enc_tfm_n_heads, hp.enc_tfm_dim,
+                                     hp.enc_tfm_dim, hp.tfm_max_period, pb, pk[l], pv[l], m, W, &tk, &tv, o);
             pk[l] = tk;
             pv[l] = tv;
         }
@@ -220,7 +222,7 @@ static MimiEnc mimi_build_encode(ggml_context *    ctx,
     }
 
     y            = ggml_cont(ctx, ggml_transpose(ctx, y));                                          // [Te, C]
-    y            = ggml_reshape_3d(ctx, y, Te, hp.tfm_dim, 1);
+    y            = ggml_reshape_3d(ctx, y, Te, hp.enc_tfm_dim, 1);
     y            = pt_conv1d(ctx, w.downsample, y, PT_PAD_REPLICATE);                               // [Tf, inner, 1]
     const int Tf = (int) y->ne[0];
     y            = ggml_cont(ctx, ggml_transpose(ctx, ggml_reshape_2d(ctx, y, Tf, hp.inner_dim)));  // [inner, Tf]
