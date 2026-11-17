@@ -2,7 +2,7 @@
 // causal-conv.h: causal Conv1d and ConvTranspose1d graph primitives of the
 // Mimi SEANet (StreamingConv1d / StreamingConvTranspose1d).
 //
-// Activations are T-first [T, C, 1] (the ggml_conv_1d input layout).
+// Activations are T-first [T, C, 1].
 //
 // Conv1d: left padding of (k - 1) * d + 1 - stride frames, zeros or the
 // replicated first frame. The offline form pads in graph; the streaming
@@ -26,6 +26,15 @@ static int pt_conv_pad(const Conv & c) {
     return (c.k - 1) * c.dilation + 1 - c.stride;
 }
 
+// Pad free conv as an implicit GEMM over a one row image, the patches only
+// expand in shared memory. x [T, IC, 1] -> [T_out, OC, 1].
+static ggml_tensor * pt_conv1d_gemm(ggml_context * ctx, const Conv & c, ggml_tensor * x, int stride) {
+    ggml_tensor * y =
+        ggml_conv_2d_direct(ctx, ggml_reshape_4d(ctx, c.w, c.w->ne[0], 1, c.w->ne[1], c.w->ne[2]),
+                            ggml_reshape_4d(ctx, x, x->ne[0], 1, x->ne[1], 1), stride, 1, 0, 0, c.dilation, 1);
+    return ggml_reshape_3d(ctx, y, y->ne[0], y->ne[2], 1);
+}
+
 // Offline causal conv, T a multiple of c.stride. Returns [T / stride, OC, 1].
 static ggml_tensor * pt_conv1d(ggml_context * ctx, const Conv & c, ggml_tensor * x, PTPadMode mode) {
     const int pad = pt_conv_pad(c);
@@ -38,7 +47,7 @@ static ggml_tensor * pt_conv1d(ggml_context * ctx, const Conv & c, ggml_tensor *
             x = ggml_pad_ext(ctx, x, pad, 0, 0, 0, 0, 0, 0, 0);
         }
     }
-    ggml_tensor * y = ggml_conv_1d(ctx, c.w, x, c.stride, 0, c.dilation);
+    ggml_tensor * y = pt_conv1d_gemm(ctx, c, x, c.stride);
     if (c.b) {
         y = ggml_add(ctx, y, ggml_reshape_3d(ctx, c.b, 1, c.oc, 1));
     }
@@ -60,7 +69,7 @@ static ggml_tensor * pt_conv1d_stream(ggml_context * ctx,
             ggml_view_3d(ctx, xe, L, xe->ne[1], 1, xe->nb[1], xe->nb[2], (size_t) (xe->ne[0] - L) * xe->nb[0]);
         ggml_build_forward_expand(gf, ggml_cpy(ctx, tail, state));
     }
-    ggml_tensor * y = ggml_conv_1d(ctx, c.w, xe, 1, 0, c.dilation);
+    ggml_tensor * y = pt_conv1d_gemm(ctx, c, xe, 1);
     if (c.b) {
         y = ggml_add(ctx, y, ggml_reshape_3d(ctx, c.b, 1, c.oc, 1));
     }
